@@ -20,13 +20,8 @@ export type MemoryType = 'episodic' | 'semantic' | 'procedural';
 import { hybridSearch } from '../retrieval/hybrid.js';
 import { filterMemories, scoreForQuestionType } from '../retrieval/filter.js';
 import { normalizeEntities, createAliasStore, type EntityAliasStore } from '../extractors/normalize.js';
-import { EntityStore, type EntityType } from './entity-store.js';
-import { RelationshipStore, type RelationshipType } from './relationship-store.js';
-import { extractRelationships, inferEntityType } from '../extractors/relationships.js';
-import { resolveCoreferences, addToEntityCache, type CoreferenceResult } from '../extractors/coreference.js';
-import { getValueWithHistory, getTemporalHistory } from '../reasoning/contradiction.js';
-import { spreadActivation } from '../retrieval/spreading-activation.js';
-import { extractTemporalMetadata, type TemporalMetadata } from '../extractors/temporal-metadata.js';
+import { EntityStore } from './entity-store.js';
+import { RelationshipStore } from './relationship-store.js';
 
 // Alias store for spelling variants and entity aliases
 let aliasStore: EntityAliasStore | null = null;
@@ -44,14 +39,12 @@ function getAliasStore(): EntityAliasStore {
 
 function extractEntitiesFromText(text: string): string[] {
   const entities: string[] = [];
-  
-  // Hardcoded patterns for known entities
   const patterns = [
     'Phillip', 'KakāpōHiko', 'Kakāpō', 'Hiko',
     'Elev8Advisory', 'BrandForge', 'Muninn', 'OpenClaw',
     'Sammy Clemens', 'Charlie Babbage', 'Donna Paulsen',
     'Brisbane', 'Australia', 'React', 'Node.js', 'PostgreSQL',
-    'SQLite', 'Ollama', 'Stripe', 'LGBTQ'
+    'SQLite', 'Ollama', 'Stripe'
   ];
   
   for (const p of patterns) {
@@ -60,185 +53,12 @@ function extractEntitiesFromText(text: string): string[] {
     }
   }
   
-  // Common words to exclude
-  const excludeWords = new Set([
-    'The', 'This', 'That', 'It', 'He', 'She', 'They', 'We', 'I', 'You',
-    'What', 'When', 'Where', 'Why', 'How', 'Is', 'Are', 'Was', 'Were',
-    'Have', 'Has', 'Had', 'Do', 'Does', 'Did', 'Can', 'Could', 'Would',
-    'Should', 'Will', 'Going', 'Yes', 'No', 'Okay', 'Ok', 'So', 'But',
-    'And', 'Or', 'If', 'Then', 'Now', 'Just', 'Well', 'Oh', 'Hi', 'Hello',
-    'Hey', 'Thanks', 'Thank', 'Wow', 'Good', 'Bad', 'Nice', 'Great', 'Cool',
-    'Yeah', 'Yep', 'Nope', 'Sure', 'Right', 'Left', 'First', 'Second', 'Third',
-    'Last', 'Next', 'Other', 'Another', 'Same', 'Different', 'New', 'Old',
-    'Big', 'Small', 'Long', 'Short', 'High', 'Low', 'Early', 'Late',
-    'Today', 'Tomorrow', 'Yesterday', 'Monday', 'Tuesday', 'Wednesday',
-    'Thursday', 'Friday', 'Saturday', 'Sunday', 'Taking', 'Anything', 'Mel'
-  ]);
-  
-  // Pattern 1: Names at start of sentence or followed by colon (dialogue)
-  // "Caroline: I went..." or "Caroline went to..."
-  const nameAtStart = /(?:^|[.!?]\s+)([A-Z][a-z]{2,})(?:\s*:|\s+[a-z])/gm;
-  let match;
-  while ((match = nameAtStart.exec(text)) !== null) {
-    if (!excludeWords.has(match[1])) {
-      entities.push(match[1]);
-    }
-  }
-  
-  // Pattern 2: Names after prepositions (with, by, from, to)
-  const afterPrep = /(?:with|by|from|to)\s+([A-Z][a-z]{2,})\b/gi;
-  while ((match = afterPrep.exec(text)) !== null) {
-    if (!excludeWords.has(match[1])) {
-      entities.push(match[1]);
-    }
-  }
-  
-  // Pattern 3: Names in direct address (", Name" or "Name,")
-  const directAddress = /,\s*([A-Z][a-z]{2,})\b|\b([A-Z][a-z]{2,})\s*,/g;
-  while ((match = directAddress.exec(text)) !== null) {
-    const name = match[1] || match[2];
-    if (name && !excludeWords.has(name)) {
-      entities.push(name);
-    }
-  }
-  
-  // Pattern 4: Names before relationship verbs
-  const beforeVerb = /\b([A-Z][a-z]{2,})\s+(?:went|is|knows|likes|works|plans|has|said|told|asked|called|visited|met)\b/gi;
-  while ((match = beforeVerb.exec(text)) !== null) {
-    if (!excludeWords.has(match[1])) {
-      entities.push(match[1]);
-    }
-  }
-  
-  // Deduplicate
   return [...new Set(entities)];
 }
 
 // ============================================================================
-// TEMPORAL QUERY PARSER
+// QUERY EXPANSION FOR SPELLING VARIANTS
 // ============================================================================
-
-/**
- * Parse natural language time references into date ranges
- * Supports: "yesterday", "last Tuesday", "last week", "this morning", etc.
- */
-function parseTemporalQuery(last: string): { start: Date; end: Date } | null {
-  const now = new Date();
-  const lower = last.toLowerCase().trim();
-  
-  // Get day of week (0 = Sunday)
-  const dayOfWeek = now.getDay();
-  
-  switch (lower) {
-    case 'yesterday': {
-      const yesterday = new Date(now);
-      yesterday.setDate(yesterday.getDate() - 1);
-      yesterday.setHours(0, 0, 0, 0);
-      const endOfYesterday = new Date(yesterday);
-      endOfYesterday.setHours(23, 59, 59, 999);
-      return { start: yesterday, end: endOfYesterday };
-    }
-    
-    case 'today': {
-      const startOfToday = new Date(now);
-      startOfToday.setHours(0, 0, 0, 0);
-      const endOfToday = new Date(now);
-      return { start: startOfToday, end: endOfToday };
-    }
-    
-    case 'this morning': {
-      const startOfMorning = new Date(now);
-      startOfMorning.setHours(0, 0, 0, 0);
-      const endOfMorning = new Date(now);
-      endOfMorning.setHours(12, 0, 0, 0);
-      return { start: startOfMorning, end: endOfMorning };
-    }
-    
-    case 'this afternoon': {
-      const startOfAfternoon = new Date(now);
-      startOfAfternoon.setHours(12, 0, 0, 0);
-      const endOfAfternoon = new Date(now);
-      endOfAfternoon.setHours(18, 0, 0, 0);
-      return { start: startOfAfternoon, end: endOfAfternoon };
-    }
-    
-    case 'this week': {
-      const startOfWeek = new Date(now);
-      startOfWeek.setDate(now.getDate() - dayOfWeek);
-      startOfWeek.setHours(0, 0, 0, 0);
-      return { start: startOfWeek, end: now };
-    }
-    
-    case 'last week': {
-      const startOfLastWeek = new Date(now);
-      startOfLastWeek.setDate(now.getDate() - dayOfWeek - 7);
-      startOfLastWeek.setHours(0, 0, 0, 0);
-      const endOfLastWeek = new Date(startOfLastWeek);
-      endOfLastWeek.setDate(startOfLastWeek.getDate() + 6);
-      endOfLastWeek.setHours(23, 59, 59, 999);
-      return { start: startOfLastWeek, end: endOfLastWeek };
-    }
-    
-    case 'this month': {
-      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      return { start: startOfMonth, end: now };
-    }
-    
-    case 'last month': {
-      const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
-      return { start: startOfLastMonth, end: endOfLastMonth };
-    }
-    
-    default: {
-      // Handle "last Tuesday", "last Friday", etc.
-      const dayMatch = lower.match(/^last\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)$/);
-      if (dayMatch) {
-        const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-        const targetDay = dayNames.indexOf(dayMatch[1]);
-        
-        // Calculate days ago to reach target day
-        let daysAgo = dayOfWeek - targetDay;
-        if (daysAgo <= 0) daysAgo += 7; // Go back one week if today or in future
-        
-        const targetDate = new Date(now);
-        targetDate.setDate(now.getDate() - daysAgo);
-        targetDate.setHours(0, 0, 0, 0);
-        
-        const endOfTarget = new Date(targetDate);
-        endOfTarget.setHours(23, 59, 59, 999);
-        
-        return { start: targetDate, end: endOfTarget };
-      }
-      
-      // Handle "X days ago"
-      const daysAgoMatch = lower.match(/^(\d+)\s+days?\s+ago$/);
-      if (daysAgoMatch) {
-        const days = parseInt(daysAgoMatch[1]);
-        const start = new Date(now);
-        start.setDate(now.getDate() - days);
-        start.setHours(0, 0, 0, 0);
-        const end = new Date(start);
-        end.setHours(23, 59, 59, 999);
-        return { start, end };
-      }
-      
-      // Handle "X weeks ago"
-      const weeksAgoMatch = lower.match(/^(\d+)\s+weeks?\s+ago$/);
-      if (weeksAgoMatch) {
-        const weeks = parseInt(weeksAgoMatch[1]);
-        const start = new Date(now);
-        start.setDate(now.getDate() - (weeks * 7));
-        start.setHours(0, 0, 0, 0);
-        return { start, end: now };
-      }
-      
-      // Could not parse
-      console.warn(`Could not parse temporal query: "${last}"`);
-      return null;
-    }
-  }
-}
 
 /**
  * Expand query with spelling variants (UK↔US English)
@@ -282,43 +102,19 @@ export interface Memory {
   id: string;
   type: MemoryType;
   content: string;
-  // Coreference resolution metadata
-  resolvedContent?: string;  // Text with resolved entities [EntityName]
-  coreferenceMap?: Record<string, string>;  // Maps pronouns to canonical entities
+  resolved_content?: string;      // Phase 1.6: Temporal-resolved content
   title?: string;
   summary?: string;
   entities: string[];
   topics: string[];
   embedding: number[];
   salience: number;
-  // Temporal metadata (optional for backward compatibility)
-  timestamp?: string;       // When the memory occurred (not just created)
-  sessionId?: string;       // Session/conversation ID for grouping
-  ttl?: number;             // Optional time-to-live in seconds
+  timestamp: string;              // When the memory occurred
+  sessionId?: string;             // Session/conversation ID
+  ttl?: number;                   // Time-to-live in seconds
   created_at: string;
   updated_at: string;
   deleted_at?: string;
-}
-
-export interface RecallOptions {
-  types?: MemoryType[];
-  entities?: string[];
-  topics?: string[];
-  limit?: number;
-  // Temporal options
-  timeRange?: {
-    start: Date | string;
-    end: Date | string;
-  };
-  sessionId?: string;
-  last?: string; // Natural language: "last Tuesday", "yesterday", "last week"
-  // Query-time expansion: recent conversation turns for pronoun resolution
-  recentTurns?: Array<{ text: string; speaker?: string }>;
-  // P7.1: Spreading activation for multi-hop retrieval
-  enableSpreading?: boolean;
-  // P7.2: Temporal decay scoring
-  enableTemporalDecay?: boolean;
-  temporalHalfLifeDays?: number;
 }
 
 export interface Procedure {
@@ -371,13 +167,13 @@ export interface VaultStats {
   procedures: number;
 }
 
-// Embedding function using Ollama (all-minilm for speed)
+// Embedding function using Ollama
 export async function generateEmbedding(text: string): Promise<number[]> {
   const response = await fetch('http://localhost:11434/api/embeddings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'all-minilm',
+      model: 'nomic-embed-text',
       prompt: text
     })
   });
@@ -411,7 +207,7 @@ export class MemoryStore {
   private db: Database.Database;
   private entityStore: EntityStore;
   private relationshipStore: RelationshipStore;
-  
+
   constructor(dbPath?: string) {
     const defaultPath = path.join(process.cwd(), 'openclaw-memory.db');
     this.db = new Database(dbPath || defaultPath);
@@ -419,14 +215,14 @@ export class MemoryStore {
     this.relationshipStore = new RelationshipStore(this.db);
     this.init();
   }
-  
+
   /**
    * Get the entity store for direct access
    */
   getEntityStore(): EntityStore {
     return this.entityStore;
   }
-  
+
   /**
    * Get the relationship store for direct access
    */
@@ -442,7 +238,6 @@ export class MemoryStore {
         type TEXT NOT NULL CHECK(type IN ('episodic', 'semantic', 'procedural')),
         content TEXT NOT NULL,
         resolved_content TEXT,
-        coreference_map TEXT,
         title TEXT,
         summary TEXT,
         entities TEXT DEFAULT '[]',
@@ -456,6 +251,9 @@ export class MemoryStore {
         updated_at TEXT DEFAULT (datetime('now')),
         deleted_at TEXT
       );
+
+      CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
       
       CREATE TABLE IF NOT EXISTS entities (
         name TEXT PRIMARY KEY,
@@ -489,8 +287,6 @@ export class MemoryStore {
       
       CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
       CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
-      CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp);
-      CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
       CREATE INDEX IF NOT EXISTS idx_memories_deleted ON memories(deleted_at);
       CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
       CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
@@ -513,58 +309,20 @@ export class MemoryStore {
       timestamp?: string;      // When the memory occurred (defaults to now)
       sessionId?: string;     // Session/conversation ID
       ttl?: number;            // Time-to-live in seconds
-      sessionDate?: Date | string;  // Session date for temporal resolution
     } = {}
   ): Promise<Memory> {
-    const id = `m_${uuidv4().slice(0, 8)`;
+    const id = `m_${uuidv4().slice(0, 8)}`;
+    const embedding = await generateEmbedding(content);
     const now = new Date().toISOString();
-    // Use provided timestamp or default to now
     const timestamp = options.timestamp || now;
-    
-    // ========================================================================
-    // PHASE 1.6: TEMPORAL RESOLUTION
-    // Resolve relative dates (yesterday, next week, etc.) using session date
-    // ========================================================================
-    
-    let resolvedContent = content;
-    let temporalMeta: TemporalMetadata | null = null;
-    
-    // Extract temporal metadata using session date as reference
-    temporalMeta = extractTemporalMetadata(content, options.sessionDate || timestamp);
-    
-    // If we resolved a date, enrich the content for better retrieval
-    if (temporalMeta?.eventTime && temporalMeta.confidence > 0.5) {
-      // Replace relative expressions with ISO dates in a natural way
-      // "yesterday I went..." → "On 2023-05-07 I went..."
-      const relativePatterns = [
-        /\byesterday\b/gi,
-        /\btoday\b/gi,
-        /\btomorrow\b/gi,
-        /last\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|month|year)/gi,
-        /next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|month|year)/gi,
-        /in\s+(?:a\s+)?(?:\d+\s+)?(?:day|days|week|weeks|month|months|year|years|fortnight)/gi,
-        /(?:\d+\s+)?(?:day|days|week|weeks|month|months|year|years)\s+(?:ago|from now)/gi
-      ];
-      
-      // Prepend resolved date for retrieval (keep original for context)
-      for (const pattern of relativePatterns) {
-        if (pattern.test(content)) {
-          resolvedContent = '[' + temporalMeta.eventTime + '] ' + content;
-          break;
-        }
-      }
-    }
-    
-    // Generate embedding from resolved content (better for semantic search)
-    const embedding = await generateEmbedding(resolvedContent);
-    
+
     // ========================================================================
     // PHASE 1.4: ENTITY NORMALIZATION
     // ========================================================================
-    
+
     // Extract entities if not provided
     const extractedEntities = options.entities || extractEntitiesFromText(content);
-    
+
     // Create properly typed entities for normalization
     const entitiesForNormalization = extractedEntities.map(e => ({
       text: e,
@@ -572,10 +330,10 @@ export class MemoryStore {
       confidence: 0.8,
       context: '',
     }));
-    
+
     // Normalize entities and store aliases
     const normalized = await normalizeEntities(content, entitiesForNormalization);
-    
+
     // Store aliases for retrieval
     const aliasStore = getAliasStore();
     for (const norm of normalized) {
@@ -583,29 +341,22 @@ export class MemoryStore {
         aliasStore.addAlias(norm.canonical, alias);
       }
     }
-    
+
     // Get canonical entity names
     const canonicalEntities = [...new Set(normalized.map(n => n.canonical))];
-    
-    // Add normalized entities to coreference cache (for query-time resolution)
-    for (const norm of normalized) {
-      addToEntityCache(norm.canonical, norm.aliases, 'person');
-    }
-    
-    // NOTE: Coreference resolution moved to query-time (see recallWithExpansion)
-    // This avoids LLM calls during storage, making ingestion instant
-    
+
     // Convert embedding to base64 for storage
     const embeddingBuffer = Buffer.from(new Float32Array(embedding).buffer);
-    
-    const sql = 'INSERT INTO memories (id, type, content, resolved_content, title, summary, entities, topics, embedding, salience, timestamp, session_id, ttl, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
-    const stmt = this.db.prepare(sql);
+
+    const stmt = this.db.prepare(`
+      INSERT INTO memories (id, type, content, title, summary, entities, topics, embedding, salience, timestamp, session_id, ttl, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
     
     stmt.run(
       id,
       type,
       content,
-      resolvedContent !== content ? resolvedContent : null,  // Store resolved content if different
       options.title || null,
       options.summary || null,
       JSON.stringify(canonicalEntities),
@@ -634,47 +385,6 @@ export class MemoryStore {
       }
     }
     
-    // ========================================================================
-    // PHASE 1.5: KNOWLEDGE GRAPH - Extract and store relationships
-    // ========================================================================
-    
-    // Infer entity types and add to knowledge graph
-    for (const entityName of canonicalEntities) {
-      const entityType = inferEntityType(entityName);
-      this.entityStore.addEntity({
-        name: entityName,
-        type: entityType as EntityType,
-        aliases: normalized
-          .find(n => n.canonical === entityName)
-          ?.aliases.filter(a => a !== entityName) || []
-      });
-    }
-    
-    // Extract relationships from content
-    const extractedRels = extractRelationships(content, new Map());
-    
-    // Store extracted relationships
-    for (const rel of extractedRels) {
-      // Resolve source entity
-      const sourceEntity = this.entityStore.findEntity(rel.source);
-      
-      if (sourceEntity) {
-        // For value-based relationships (has_target, has_customer), 
-        // use the value as the target identifier
-        const targetId = rel.value ? `value_${rel.value.replace(/[^a-z0-9]/gi, '_')}` : rel.target;
-        
-        this.relationshipStore.addRelationship({
-          source: sourceEntity.id,
-          target: targetId,
-          type: rel.type as RelationshipType,
-          value: rel.value,
-          timestamp: timestamp,
-          sessionId: options.sessionId || '',
-          confidence: rel.confidence
-        });
-      }
-    }
-    
     return this.getMemory(id)!;
   }
   
@@ -686,8 +396,6 @@ export class MemoryStore {
     
     return {
       ...row,
-      resolvedContent: row.resolved_content,
-      coreferenceMap: JSON.parse(row.coreference_map || '{}'),
       entities: JSON.parse(row.entities || '[]'),
       topics: JSON.parse(row.topics || '[]'),
       embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
@@ -696,45 +404,14 @@ export class MemoryStore {
   
   async recall(
     context: string,
-    options: RecallOptions = {}
+    options: {
+      types?: MemoryType[];
+      entities?: string[];
+      topics?: string[];
+      limit?: number;
+    } = {}
   ): Promise<Memory[]> {
     const limit = options.limit || 10;
-    
-    // ========================================================================
-    // QUERY-TIME EXPANSION: Resolve pronouns from conversation context
-    // ========================================================================
-    
-    let expandedContext = context;
-    let expandedEntities: string[] = [];
-    
-    if (options.recentTurns && options.recentTurns.length > 0) {
-      // Build context from recent turns
-      const contextText = options.recentTurns.map((t: { text: string; speaker?: string }) => t.text).join(' ');
-      const contextEntities = extractEntitiesFromText(contextText);
-      
-      // Try to resolve pronouns in the query
-      const pronouns = ['he', 'she', 'they', 'it', 'him', 'her', 'them', 'his', 'hers', 'their'];
-      const lowerContext = context.toLowerCase();
-      const foundPronouns = pronouns.filter(p => lowerContext.includes(p));
-      
-      // Get aliases for entities found in context
-      const aliasStore = getAliasStore();
-      for (const entity of contextEntities) {
-        const aliases = aliasStore.getAliases(entity);
-        if (aliases.length > 0) {
-          expandedEntities.push(entity, ...aliases);
-        }
-      }
-      
-      // If pronouns found, expand search terms
-      if (foundPronouns.length > 0 && contextEntities.length > 0) {
-        // Use first entity as most likely referent (simple heuristic)
-        // TODO: Use LLM for more accurate resolution
-        const likelyEntity = contextEntities[0];
-        expandedEntities.push(likelyEntity);
-        expandedContext = `${context} ${likelyEntity}`;
-      }
-    }
     
     // Get all non-deleted memories
     let memories = this.db.prepare(`
@@ -746,8 +423,7 @@ export class MemoryStore {
       ...row,
       entities: JSON.parse(row.entities || '[]'),
       topics: JSON.parse(row.topics || '[]'),
-      embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0))),
-      sessionId: row.session_id // Map DB column to camelCase
+      embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
     }));
     
     // Filter by type
@@ -762,36 +438,6 @@ export class MemoryStore {
       );
     }
     
-    // ========================================================================
-    // PHASE 1.5: TEMPORAL FILTERING - Only apply when explicitly requested
-    // ========================================================================
-    
-    let timeRange = options.timeRange;
-    let sessionId = options.sessionId;
-    
-    // Parse natural language time references if provided
-    if (options.last) {
-      const parsed = parseTemporalQuery(options.last);
-      if (parsed) {
-        timeRange = parsed;
-      }
-    }
-    
-    // Filter by session ID if requested
-    if (sessionId) {
-      memories = memories.filter(m => m.sessionId === sessionId);
-    }
-    
-    // Filter by time range if explicitly requested
-    if (timeRange) {
-      const start = new Date(timeRange.start).getTime();
-      const end = new Date(timeRange.end).getTime();
-      memories = memories.filter(m => {
-        const memTime = m.timestamp ? new Date(m.timestamp).getTime() : new Date(m.created_at).getTime();
-        return memTime >= start && memTime <= end;
-      });
-    }
-    
     // If too few memories, fall back to simple similarity
     if (memories.length < 3) {
       return this.simpleRecall(context, limit);
@@ -800,40 +446,6 @@ export class MemoryStore {
     // ========================================================================
     // PHASE 1.4: HYBRID RETRIEVAL + TYPE-AWARE FILTERING
     // ========================================================================
-    
-    // Detect temporal/contradiction queries and auto-augment with KG
-    const isTemporalQuery = /change|over time|history|evolve|previous|earlier|originally|started|reduced|increased|updated/i.test(context);
-    const isContradictionQuery = /current|now|latest|was|changed|rebalanced|updated|previously|target/i.test(context);
-    
-    let kgContext = '';
-    if (isTemporalQuery || isContradictionQuery) {
-      const queryEntities = extractEntitiesFromText(context);
-      
-      // Detect relationship type from query
-      let relType: RelationshipType | undefined;
-      if (/revenue|target|goal/i.test(context)) {
-        relType = 'has_target';
-      } else if (/customer|paying/i.test(context)) {
-        relType = 'has_customer';
-      } else if (/priority|focus/i.test(context)) {
-        relType = 'has_priority';
-      }
-      
-      for (const entityName of queryEntities) {
-        const entity = this.entityStore.findEntity(entityName);
-        if (entity) {
-          const history = getValueWithHistory(this.relationshipStore, this.entityStore, entityName, relType);
-          if (history.history.length > 0) {
-            const timeline = history.history.map(h => {
-              const when = new Date(h.timestamp).toLocaleDateString();
-              const status = h.superseded ? '(was)' : '(current)';
-              return `${when}: ${h.value} ${status}`;
-            }).join('\n');
-            kgContext += `\n[KG: ${entityName}]\n${timeline}\n`;
-          }
-        }
-      }
-    }
     
     try {
       // Detect factual questions that should prioritize semantic memories
@@ -845,17 +457,7 @@ export class MemoryStore {
       if (isFactualQuery && !options.types) {
         const semanticOnly = memories.filter(m => m.type === 'semantic' && (m.salience || 0.5) >= 0.5);
         if (semanticOnly.length > 0) {
-          let semanticResults = await this.recallInternal(context, semanticOnly, limit, options);
-          
-          // Augment with KG context if available
-          if (kgContext && semanticResults.length > 0) {
-            // Add KG context to the first memory's content
-            semanticResults = semanticResults.map((m, i) => ({
-              ...m,
-              content: i === 0 ? m.content + kgContext : m.content
-            }));
-          }
-          
+          const semanticResults = await this.recallInternal(context, semanticOnly, limit);
           // If we got good results from semantic, return them
           if (semanticResults.length > 0) {
             return semanticResults;
@@ -865,34 +467,7 @@ export class MemoryStore {
         // Don't return empty - try the full set
       }
       
-      let results = await this.recallInternal(context, memories, limit, options);
-      
-      // Augment with KG context
-      if (kgContext && results.length > 0) {
-        results = results.map((m, i) => ({
-          ...m,
-          content: i === 0 ? m.content + kgContext : m.content
-        }));
-      }
-      
-      // ========================================================================
-      // P7.1: SPREADING ACTIVATION - Expand results via knowledge graph
-      // ========================================================================
-      if (options.enableSpreading && results.length > 0) {
-        try {
-          results = await spreadActivation(
-            results,
-            this.relationshipStore,
-            this.entityStore,
-            memories,
-            { maxHops: 2, decayFactor: 0.5, maxNeighbors: 10, minActivation: 0.25 }
-          );
-        } catch (error) {
-          console.warn('[SpreadingActivation] Failed, using initial results:', error);
-        }
-      }
-      
-      return results;
+      return this.recallInternal(context, memories, limit);
     } catch (error) {
       console.warn('Hybrid retrieval failed, using fallback:', error);
       return this.simpleRecall(context, limit);
@@ -900,52 +475,9 @@ export class MemoryStore {
   }
   
   /**
-   * Enhanced recall with knowledge graph for temporal and contradiction queries
-   */
-  async enhancedRecall(
-    context: string,
-    options: RecallOptions = {}
-  ): Promise<{ memories: Memory[]; temporalContext?: string }> {
-    // First do regular recall
-    const memories = await this.recall(context, options);
-    
-    // Check if this is a temporal or contradiction question
-    const isTemporalQuery = /change|over time|history|evolve|previous|earlier|originally|started|reduced|increased|updated/i.test(context);
-    const isContradictionQuery = /current|now|latest|was|changed|rebalanced|updated|previously/i.test(context);
-    
-    let temporalContext: string | undefined;
-    
-    if (isTemporalQuery || isContradictionQuery) {
-      // Extract entity from query (simplified - look for known entities)
-      const queryEntities = extractEntitiesFromText(context);
-      
-      for (const entityName of queryEntities) {
-        const entity = this.entityStore.findEntity(entityName);
-        if (entity) {
-          // Get full temporal history
-          const history = this.getEntityHistory(entityName);
-          
-          if (history.length > 0) {
-            // Format the timeline
-            const timeline = history.map(h => {
-              const when = new Date(h.timestamp).toLocaleDateString();
-              const status = h.superseded ? '(superseded)' : '(current)';
-              return `${when}: ${h.value} ${status}`;
-            }).join('\n');
-            
-            temporalContext = `Knowledge Graph History for ${entityName}:\n${timeline}`;
-          }
-        }
-      }
-    }
-    
-    return { memories, temporalContext };
-  }
-  
-  /**
    * Internal recall with hybrid search
    */
-  private async recallInternal(context: string, memories: Memory[], limit: number, options: RecallOptions = {}): Promise<Memory[]> {
+  private async recallInternal(context: string, memories: Memory[], limit: number): Promise<Memory[]> {
     try {
       // 1. Expand query with spelling variants (UK↔US)
       const expandedQueries = expandQueryWithVariants(context);
@@ -956,22 +488,14 @@ export class MemoryStore {
       // 3. Run hybrid search with BM25 + semantic
       let candidates = await hybridSearch(context, memories, { 
         k: limit * 3,
-        enableLLMFilter: false,
-        enableTemporalDecay: options.enableTemporalDecay,
-        temporalHalfLifeDays: options.temporalHalfLifeDays,
-        entityStore: this.entityStore,
-        relationshipStore: this.relationshipStore
+        enableLLMFilter: false
       });
       
       // 4. Also search with expanded queries and merge results
       for (const expandedQuery of expandedQueries.slice(1)) {
         const expandedResults = await hybridSearch(expandedQuery, memories, { 
           k: limit * 2,
-          enableLLMFilter: false,
-          enableTemporalDecay: options.enableTemporalDecay,
-          temporalHalfLifeDays: options.temporalHalfLifeDays,
-          entityStore: this.entityStore,
-          relationshipStore: this.relationshipStore
+          enableLLMFilter: false
         });
         
         // Merge unique results
@@ -1117,49 +641,6 @@ export class MemoryStore {
     const procedures = (this.db.prepare('SELECT COUNT(*) as count FROM procedures').get() as any).count;
     
     return { total, byType, entities, edges, procedures };
-  }
-  
-  // ============================================================================
-  // PHASE 1.5: KNOWLEDGE GRAPH API
-  // ============================================================================
-  
-  /**
-   * Get temporal history for an entity's relationships
-   * Useful for contradiction and temporal questions
-   */
-  getEntityHistory(
-    entityName: string,
-    relationshipType?: string
-  ): { value?: string; timestamp: string; superseded: boolean }[] {
-    const result = getValueWithHistory(
-      this.relationshipStore,
-      this.entityStore,
-      entityName,
-      relationshipType as RelationshipType | undefined
-    );
-    
-    return result.history;
-  }
-  
-  /**
-   * Get all contradictions involving an entity
-   */
-  getEntityContradictions(entityName: string): { current: any; superseded: any; timestamp: string }[] {
-    const { getEntityContradictions } = require('../reasoning/contradiction.js');
-    return getEntityContradictions(this.relationshipStore, this.entityStore, entityName);
-  }
-  
-  /**
-   * Get current value for an entity relationship
-   */
-  getCurrentValue(entityName: string, relationshipType: string): string | undefined {
-    const result = getValueWithHistory(
-      this.relationshipStore,
-      this.entityStore,
-      entityName,
-      relationshipType as RelationshipType | undefined
-    );
-    return result.current;
   }
   
   // Procedure management

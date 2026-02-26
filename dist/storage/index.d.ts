@@ -12,39 +12,19 @@ export interface Memory {
     id: string;
     type: MemoryType;
     content: string;
-    resolvedContent?: string;
-    coreferenceMap?: Record<string, string>;
+    resolved_content?: string;
     title?: string;
     summary?: string;
     entities: string[];
     topics: string[];
     embedding: number[];
     salience: number;
-    timestamp?: string;
+    timestamp: string;
     sessionId?: string;
     ttl?: number;
     created_at: string;
     updated_at: string;
     deleted_at?: string;
-}
-export interface RecallOptions {
-    types?: MemoryType[];
-    entities?: string[];
-    topics?: string[];
-    limit?: number;
-    timeRange?: {
-        start: Date | string;
-        end: Date | string;
-    };
-    sessionId?: string;
-    last?: string;
-    recentTurns?: Array<{
-        text: string;
-        speaker?: string;
-    }>;
-    enableSpreading?: boolean;
-    enableTemporalDecay?: boolean;
-    temporalHalfLifeDays?: number;
 }
 export interface Procedure {
     id: string;
@@ -114,7 +94,32 @@ export declare class MemoryStore {
         timestamp?: string;
         sessionId?: string;
         ttl?: number;
-        sessionDate?: Date | string;
     }): Promise<Memory>;
+    getMemory(id: string): Memory | null;
+    recall(context: string, options?: {
+        types?: MemoryType[];
+        entities?: string[];
+        topics?: string[];
+        limit?: number;
+    }): Promise<Memory[]>;
+    /**
+     * Internal recall with hybrid search
+     */
+    private recallInternal;
+    /**
+     * Simple semantic recall fallback
+     */
+    private simpleRecall;
+    forget(id: string, hard?: boolean): boolean;
+    getEntities(): Entity[];
+    connect(sourceId: string, targetId: string, relationship: string): MemoryEdge;
+    getNeighbors(memoryId: string, depth?: number): Memory[];
+    getStats(): VaultStats;
+    createProcedure(title: string, steps: string[], description?: string): Promise<Procedure>;
+    getProcedure(id: string): Procedure | null;
+    getAllProcedures(): Procedure[];
+    procedureFeedback(procedureId: string, success: boolean, failedAtStep?: number, context?: string): Promise<Procedure>;
+    close(): void;
 }
+export default MemoryStore;
 //# sourceMappingURL=index.d.ts.map
