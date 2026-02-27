@@ -20,6 +20,7 @@ export type MemoryType = 'episodic' | 'semantic' | 'procedural';
 import { hybridSearch } from '../retrieval/hybrid.js';
 import { filterMemories, scoreForQuestionType } from '../retrieval/filter.js';
 import { normalizeEntities, createAliasStore, type EntityAliasStore } from '../extractors/normalize.js';
+import { extractTemporalMetadata } from '../extractors/temporal-metadata.js';
 import { EntityStore } from './entity-store.js';
 import { RelationshipStore } from './relationship-store.js';
 
@@ -309,12 +310,25 @@ export class MemoryStore {
       timestamp?: string;      // When the memory occurred (defaults to now)
       sessionId?: string;     // Session/conversation ID
       ttl?: number;            // Time-to-live in seconds
+      sessionDate?: Date | string;  // Reference date for temporal resolution
     } = {}
   ): Promise<Memory> {
     const id = `m_${uuidv4().slice(0, 8)}`;
     const embedding = await generateEmbedding(content);
     const now = new Date().toISOString();
     const timestamp = options.timestamp || now;
+
+    // ========================================================================
+    // TEMPORAL RESOLUTION: Convert relative dates to absolute
+    // ========================================================================
+    
+    let resolvedContent: string | null = null;
+    const temporalMeta = extractTemporalMetadata(content, options.sessionDate || timestamp);
+    
+    if (temporalMeta?.eventTime && temporalMeta.confidence > 0.5) {
+      // Prepend resolved date: "[2023-05-07] I went to the LGBTQ group yesterday"
+      resolvedContent = `[${temporalMeta.eventTime}] ${content}`;
+    }
 
     // ========================================================================
     // PHASE 1.4: ENTITY NORMALIZATION
@@ -349,14 +363,15 @@ export class MemoryStore {
     const embeddingBuffer = Buffer.from(new Float32Array(embedding).buffer);
 
     const stmt = this.db.prepare(`
-      INSERT INTO memories (id, type, content, title, summary, entities, topics, embedding, salience, timestamp, session_id, ttl, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO memories (id, type, content, resolved_content, title, summary, entities, topics, embedding, salience, timestamp, session_id, ttl, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     stmt.run(
       id,
       type,
       content,
+      resolvedContent,  // Resolved date content or null
       options.title || null,
       options.summary || null,
       JSON.stringify(canonicalEntities),
@@ -411,12 +426,81 @@ export class MemoryStore {
       limit?: number;
     } = {}
   ): Promise<Memory[]> {
-    const limit = options.limit || 10;
-    
+    // P8.1: Increased retrieval budget (Engram uses K=25)
+    // Default limit increased from 10 to 20 for better multi-hop coverage
+    const limit = options.limit || 20;
+
+    // ========================================================================
+    // P8.2: TEMPORAL EVOLUTION DETECTION
+    // Detect queries asking about changes over time
+    // ========================================================================
+
+    const isTemporalEvolutionQuery = /how (did|has|does).*(change|evolve|progress|develop|vary)/i.test(context) ||
+      /over (time|the sessions|the (last|past) \w+)/i.test(context) ||
+      /what (was|were) .*(before|initially|originally|started)/i.test(context) ||
+      /history|timeline|chronolog/i.test(context);
+
+    // ========================================================================
+    // P8: MULTI-HOP DETECTION - Entity-centric retrieval
+    // ========================================================================
+
+    const isMultiHopQuery = /^(would|could|should|what (would|could)|is .+ likely)/i.test(context) ||
+      /likely|consider|pursue|interested|would be|if she|if he|if they/i.test(context);
+
+    if (isMultiHopQuery) {
+      // Use entity-centric retrieval for multi-hop reasoning
+      const entityResults = await this.recallEntityContext(context, { limit });
+      if (entityResults.length > 0) {
+        return entityResults;
+      }
+    }
+
+    // ========================================================================
+    // PHASE 1.6: TEMPORAL QUERY RESOLUTION
+    // ========================================================================
+
+    // Extract temporal reference from query (e.g., "on Tuesday", "yesterday")
+    const temporalQuery = extractTemporalMetadata(context, new Date());
+
     // Get all non-deleted memories
     let memories = this.db.prepare(`
       SELECT * FROM memories WHERE deleted_at IS NULL
     `).all() as any[];
+
+    // Filter by temporal reference if present with high confidence
+    if (temporalQuery.eventTime && temporalQuery.confidence > 0.7) {
+      const targetDate = temporalQuery.eventTime; // YYYY-MM-DD format
+
+      memories = memories.filter(m => {
+        // Check resolved_content first (contains [YYYY-MM-DD] prefix)
+        if (m.resolved_content && m.resolved_content.includes(`[${targetDate}]`)) {
+          return true;
+        }
+        // Check timestamp field
+        if (m.timestamp && m.timestamp.startsWith(targetDate)) {
+          return true;
+        }
+        // Check created_at for episodic memories
+        if (m.type === 'episodic' && m.created_at && m.created_at.startsWith(targetDate)) {
+          return true;
+        }
+        return false;
+      });
+
+      // If temporal filter found memories, return them directly
+      if (memories.length > 0) {
+        const parsed = memories.map(row => ({
+          ...row,
+          entities: JSON.parse(row.entities || '[]'),
+          topics: JSON.parse(row.topics || '[]'),
+          embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
+        }));
+        return parsed.slice(0, limit);
+      }
+      // If no exact matches, fall through to semantic search
+      // but log that we tried temporal filtering
+      console.log(`Temporal filter for "${targetDate}" found no exact matches, falling back to semantic search`);
+    }
     
     // Parse stored fields
     memories = memories.map(row => ({
@@ -442,7 +526,38 @@ export class MemoryStore {
     if (memories.length < 3) {
       return this.simpleRecall(context, limit);
     }
-    
+
+    // ========================================================================
+    // P8.2: TEMPORAL EVOLUTION HANDLING
+    // For "how did X change over time" queries, get all entity memories chronologically
+    // ========================================================================
+
+    if (isTemporalEvolutionQuery) {
+      const queryEntities = extractEntitiesFromText(context);
+      if (queryEntities.length > 0) {
+        const entityMemories: Memory[] = [];
+        const seen = new Set<string>();
+        for (const entity of queryEntities) {
+          const mems = this.getMemoriesByEntity(entity, 50);
+          for (const m of mems) {
+            if (!seen.has(m.id)) {
+              seen.add(m.id);
+              entityMemories.push(m);
+            }
+          }
+        }
+        if (entityMemories.length > 0) {
+          // Sort chronologically by timestamp
+          entityMemories.sort((a, b) => {
+            const aTime = a.timestamp || a.created_at || '';
+            const bTime = b.timestamp || b.created_at || '';
+            return aTime.localeCompare(bTime);
+          });
+          return entityMemories.slice(0, limit * 2); // Return more for temporal aggregation
+        }
+      }
+    }
+
     // ========================================================================
     // PHASE 1.4: HYBRID RETRIEVAL + TYPE-AWARE FILTERING
     // ========================================================================
@@ -758,6 +873,101 @@ export class MemoryStore {
     }
     
     return this.getProcedure(procedureId)!;
+  }
+  
+  /**
+   * P8: Entity-centric recall for multi-hop reasoning
+   * Returns all memories containing a specific entity
+   */
+  getMemoriesByEntity(entityName: string, limit: number = 50): Memory[] {
+    // Normalize entity name using alias store
+    const aliasStore = getAliasStore();
+    const canonicalName = aliasStore.findCanonical(entityName) || entityName;
+    const aliases = aliasStore.getAliases(canonicalName);
+    
+    // Build pattern to match any variant
+    const patterns = [canonicalName, ...aliases].map(n => n.toLowerCase());
+    
+    const memories = this.db.prepare(`
+      SELECT * FROM memories WHERE deleted_at IS NULL
+    `).all() as any[];
+    
+    // Filter memories that contain the entity (by name or alias)
+    const matching = memories.filter(m => {
+      const entities = JSON.parse(m.entities || '[]');
+      const content = (m.content || '').toLowerCase();
+      
+      // Check if entity is in the entities array
+      if (entities.some((e: string) => patterns.includes(e.toLowerCase()))) {
+        return true;
+      }
+      
+      // Also check content for mentions
+      return patterns.some(p => content.includes(p));
+    });
+    
+    // Parse and return
+    return matching.slice(0, limit).map(row => ({
+      ...row,
+      entities: JSON.parse(row.entities || '[]'),
+      topics: JSON.parse(row.topics || '[]'),
+      embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
+    }));
+  }
+  
+  /**
+   * P8: Multi-hop retrieval - aggregate context for entity questions
+   */
+  async recallEntityContext(query: string, options: { limit?: number } = {}): Promise<Memory[]> {
+    const limit = options.limit || 20;
+    
+    // Extract entity names from query
+    const entities = extractEntitiesFromText(query);
+    
+    if (entities.length === 0) {
+      // Fall back to regular recall (but skip multi-hop detection to avoid recursion)
+      return this.simpleRecall(query, limit);
+    }
+    
+    // Get all memories for each entity
+    const allMemories: Memory[] = [];
+    const seen = new Set<string>();
+    
+    for (const entity of entities) {
+      const entityMems = this.getMemoriesByEntity(entity, limit);
+      for (const m of entityMems) {
+        if (!seen.has(m.id)) {
+          seen.add(m.id);
+          allMemories.push(m);
+        }
+      }
+    }
+    
+    // If we got memories, rank them by relevance to query
+    if (allMemories.length > 0) {
+      // Simple keyword matching for relevance
+      const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+      
+      const scored = allMemories.map(m => {
+        const content = m.content.toLowerCase();
+        let score = m.salience || 0.5;
+        
+        // Boost if query keywords appear
+        for (const word of queryWords) {
+          if (content.includes(word)) {
+            score += 0.1;
+          }
+        }
+        
+        return { ...m, salience: score };
+      });
+      
+      scored.sort((a, b) => (b.salience || 0) - (a.salience || 0));
+      return scored.slice(0, limit);
+    }
+    
+    // Fallback to semantic recall
+    return this.recall(query, { limit });
   }
   
   close(): void {

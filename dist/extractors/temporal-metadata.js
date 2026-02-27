@@ -128,6 +128,72 @@ const RELATIVE_PATTERNS = [
         pattern: /\btoday\b/i,
         resolver: (_, base) => base
     },
+    // "on Tuesday", "on Monday" - resolve to most recent occurrence
+    // If the day hasn't happened yet this week, use last week's occurrence
+    // If it has passed, use this week's occurrence
+    {
+        pattern: /on\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
+        resolver: (match, base) => {
+            const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+            const target = match[1].toLowerCase();
+            const targetDay = days.indexOf(target);
+            const currentDay = base.weekday - 1; // Luxon uses 1-7, we need 0-6
+            // Calculate days since that day this week
+            let diff = currentDay - targetDay;
+            if (diff < 0)
+                diff += 7; // Target is earlier in the week, go back
+            // If the day is today, diff is 0 - return today
+            // If the day is in the past this week, diff is positive
+            // If the day is in the future this week, we wrap around to last week
+            return base.minus({ days: diff });
+        }
+    },
+    // Standalone day names "Tuesday", "Monday" (without "on")
+    {
+        pattern: /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b(?!\s+(next|last|week|month))/i,
+        resolver: (match, base) => {
+            const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+            const target = match[1].toLowerCase();
+            const targetDay = days.indexOf(target);
+            const currentDay = base.weekday - 1;
+            // Most recent occurrence
+            let diff = currentDay - targetDay;
+            if (diff < 0)
+                diff += 7;
+            return base.minus({ days: diff });
+        }
+    },
+    // "X days/weeks/months/years ago" - generic past offset (digits or words)
+    {
+        pattern: /(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(day|days|week|weeks|month|months|year|years)\s+ago\b/i,
+        resolver: (match, base) => {
+            const wordToNum = {
+                'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+                'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10
+            };
+            const countRaw = match[1].toLowerCase();
+            const count = wordToNum[countRaw] || parseInt(match[1]);
+            const unit = match[2].toLowerCase();
+            const unitMap = {
+                'day': 'days', 'days': 'days',
+                'week': 'weeks', 'weeks': 'weeks',
+                'month': 'months', 'months': 'months',
+                'year': 'years', 'years': 'years'
+            };
+            return base.minus({ [unitMap[unit] || unit]: count });
+        }
+    },
+    // "a day/week/month/year ago"
+    {
+        pattern: /a\s+(day|week|month|year)\s+ago\b/i,
+        resolver: (match, base) => {
+            const unit = match[1].toLowerCase();
+            const unitMap = {
+                'day': 'days', 'week': 'weeks', 'month': 'months', 'year': 'years'
+            };
+            return base.minus({ [unitMap[unit] || unit]: 1 });
+        }
+    },
     // "in 2 weeks time", "3 days time"
     {
         pattern: /(\d+)\s+(week|weeks|day|days|month|months|year|years)\s+time/i,

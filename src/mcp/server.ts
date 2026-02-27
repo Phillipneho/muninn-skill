@@ -34,7 +34,7 @@ const server = new Server(
 const tools = [
   {
     name: 'memory_remember',
-    description: 'Store a memory with auto-extraction of entities and topics. Automatically classifies as episodic, semantic, or procedural.',
+    description: 'Store a memory with auto-extraction of entities and topics. Automatically classifies as episodic, semantic, or procedural. Use sessionDate for temporal resolution (e.g., "2023-05-08" to resolve "yesterday" to "2023-05-07").',
     inputSchema: {
       type: 'object',
       properties: {
@@ -54,6 +54,10 @@ const tools = [
         context: {
           type: 'string',
           description: 'Additional context for routing'
+        },
+        sessionDate: {
+          type: 'string',
+          description: 'Reference date for temporal resolution (ISO format: YYYY-MM-DD or "1:56 pm on 8 May, 2023")'
         }
       },
       required: ['content']
@@ -259,7 +263,7 @@ const tools = [
 async function handleToolCall(name: string, args: any): Promise<any> {
   switch (name) {
     case 'memory_remember': {
-      const { content, type, title, context } = args;
+      const { content, type, title, context, sessionDate } = args;
       
       // Auto-route if no type specified
       let memoryType: MemoryType = type || 'semantic';
@@ -270,12 +274,42 @@ async function handleToolCall(name: string, args: any): Promise<any> {
         else memoryType = 'semantic';
       }
       
-      const result = await store.remember(content, memoryType, { title });
+      // Parse sessionDate if provided (handles "1:56 pm on 8 May, 2023" format)
+      let parsedSessionDate: Date | undefined;
+      if (sessionDate) {
+        // Try ISO format first
+        const isoDate = new Date(sessionDate);
+        if (!isNaN(isoDate.getTime())) {
+          parsedSessionDate = isoDate;
+        } else {
+          // Try LOCOMO format: "1:56 pm on 8 May, 2023"
+          const locomMatch = sessionDate.match(/(\d{1,2}):(\d{2})\s*(am|pm)?\s*on\s+(\d{1,2})\s+(\w+),?\s*(\d{4})/i);
+          if (locomMatch) {
+            const months = ['january', 'february', 'march', 'april', 'may', 'june', 
+                           'july', 'august', 'september', 'october', 'november', 'december'];
+            const month = months.indexOf(locomMatch[5].toLowerCase());
+            const day = parseInt(locomMatch[4]);
+            const year = parseInt(locomMatch[6]);
+            if (month >= 0) {
+              parsedSessionDate = new Date(year, month, day);
+            }
+          }
+        }
+      }
+      
+      const result = await store.remember(content, memoryType, { 
+        title,
+        sessionDate: parsedSessionDate
+      });
+      
+      // Check if temporal resolution happened
+      const hasResolved = (result as any).resolved_content !== null;
+      
       return {
         success: true,
         id: result.id,
         type: result.type,
-        message: `Memory stored as ${result.type}`
+        message: `Memory stored as ${result.type}${hasResolved ? ' (temporal resolved)' : ''}`
       };
     }
     

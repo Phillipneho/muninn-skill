@@ -94,6 +94,7 @@ export declare class MemoryStore {
         timestamp?: string;
         sessionId?: string;
         ttl?: number;
+        sessionDate?: Date | string;
     }): Promise<Memory>;
     getMemory(id: string): Memory | null;
     recall(context: string, options?: {
@@ -119,6 +120,17 @@ export declare class MemoryStore {
     getProcedure(id: string): Procedure | null;
     getAllProcedures(): Procedure[];
     procedureFeedback(procedureId: string, success: boolean, failedAtStep?: number, context?: string): Promise<Procedure>;
+    /**
+     * P8: Entity-centric recall for multi-hop reasoning
+     * Returns all memories containing a specific entity
+     */
+    getMemoriesByEntity(entityName: string, limit?: number): Memory[];
+    /**
+     * P8: Multi-hop retrieval - aggregate context for entity questions
+     */
+    recallEntityContext(query: string, options?: {
+        limit?: number;
+    }): Promise<Memory[]>;
     close(): void;
 }
 export default MemoryStore;

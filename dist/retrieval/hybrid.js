@@ -27,7 +27,7 @@ function cosineSimilarity(a, b) {
  * Default options
  */
 const DEFAULT_RRF_K = 60;
-const DEFAULT_K = 10;
+const DEFAULT_K = 25; // P8.1: Increased from 10 to 25 (Engram's proven setting)
 /**
  * Hybrid retrieval combining semantic and BM25 search
  *
