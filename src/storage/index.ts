@@ -406,11 +406,12 @@ export class MemoryStore {
   getMemory(id: string): Memory | null {
     const stmt = this.db.prepare('SELECT * FROM memories WHERE id = ? AND deleted_at IS NULL');
     const row = stmt.get(id) as any;
-    
+
     if (!row) return null;
-    
+
     return {
       ...row,
+      sessionId: row.session_id,  // Map snake_case to camelCase
       entities: JSON.parse(row.entities || '[]'),
       topics: JSON.parse(row.topics || '[]'),
       embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
@@ -491,6 +492,7 @@ export class MemoryStore {
       if (memories.length > 0) {
         const parsed = memories.map(row => ({
           ...row,
+          sessionId: row.session_id,  // Map snake_case to camelCase
           entities: JSON.parse(row.entities || '[]'),
           topics: JSON.parse(row.topics || '[]'),
           embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
@@ -505,6 +507,7 @@ export class MemoryStore {
     // Parse stored fields
     memories = memories.map(row => ({
       ...row,
+      sessionId: row.session_id,  // Map snake_case to camelCase
       entities: JSON.parse(row.entities || '[]'),
       topics: JSON.parse(row.topics || '[]'),
       embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
@@ -666,11 +669,12 @@ export class MemoryStore {
     
     memories = memories.map(row => ({
       ...row,
+      sessionId: row.session_id,  // Map snake_case to camelCase
       entities: JSON.parse(row.entities || '[]'),
       topics: JSON.parse(row.topics || '[]'),
       embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
     }));
-    
+
     const scored = memories.map(m => ({
       ...m,
       _similarity: m.embedding.length > 0 ? cosineSimilarity(queryEmbedding, m.embedding) : 0
@@ -735,6 +739,7 @@ export class MemoryStore {
     
     return rows.map(row => ({
       ...row,
+      sessionId: row.session_id,  // Map snake_case to camelCase
       entities: JSON.parse(row.entities || '[]'),
       topics: JSON.parse(row.topics || '[]'),
       embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
@@ -909,6 +914,7 @@ export class MemoryStore {
     // Parse and return
     return matching.slice(0, limit).map(row => ({
       ...row,
+      sessionId: row.session_id,  // Map snake_case to camelCase
       entities: JSON.parse(row.entities || '[]'),
       topics: JSON.parse(row.topics || '[]'),
       embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))

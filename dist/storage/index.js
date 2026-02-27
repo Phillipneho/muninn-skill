@@ -266,6 +266,7 @@ export class MemoryStore {
             return null;
         return {
             ...row,
+            sessionId: row.session_id, // Map snake_case to camelCase
             entities: JSON.parse(row.entities || '[]'),
             topics: JSON.parse(row.topics || '[]'),
             embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
@@ -326,6 +327,7 @@ export class MemoryStore {
             if (memories.length > 0) {
                 const parsed = memories.map(row => ({
                     ...row,
+                    sessionId: row.session_id, // Map snake_case to camelCase
                     entities: JSON.parse(row.entities || '[]'),
                     topics: JSON.parse(row.topics || '[]'),
                     embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
@@ -339,6 +341,7 @@ export class MemoryStore {
         // Parse stored fields
         memories = memories.map(row => ({
             ...row,
+            sessionId: row.session_id, // Map snake_case to camelCase
             entities: JSON.parse(row.entities || '[]'),
             topics: JSON.parse(row.topics || '[]'),
             embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
@@ -477,6 +480,7 @@ export class MemoryStore {
     `).all();
         memories = memories.map(row => ({
             ...row,
+            sessionId: row.session_id, // Map snake_case to camelCase
             entities: JSON.parse(row.entities || '[]'),
             topics: JSON.parse(row.topics || '[]'),
             embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
@@ -533,6 +537,7 @@ export class MemoryStore {
         const rows = memStmt.all(...Array.from(neighbors));
         return rows.map(row => ({
             ...row,
+            sessionId: row.session_id, // Map snake_case to camelCase
             entities: JSON.parse(row.entities || '[]'),
             topics: JSON.parse(row.topics || '[]'),
             embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
@@ -672,6 +677,7 @@ export class MemoryStore {
         // Parse and return
         return matching.slice(0, limit).map(row => ({
             ...row,
+            sessionId: row.session_id, // Map snake_case to camelCase
             entities: JSON.parse(row.entities || '[]'),
             topics: JSON.parse(row.topics || '[]'),
             embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
