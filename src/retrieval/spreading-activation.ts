@@ -38,6 +38,9 @@ const DEFAULT_OPTIONS: SpreadingActivationOptions = {
 
 /**
  * Get all neighbors (connected entities) for a given entity
+ * 
+ * Note: Relationships store entity NAMES (not IDs) as source/target for co_occurs_with edges.
+ * This function looks up by name to match our edge storage convention.
  */
 function getNeighbors(
   entity: Entity,
@@ -46,32 +49,35 @@ function getNeighbors(
 ): NeighborResult[] {
   const neighbors: NeighborResult[] = [];
   
-  // Get outgoing relationships (as source)
-  const outgoing = relationshipStore.getBySource(entity.id);
+  // Get outgoing relationships (entity name as source)
+  // For co_occurs_with edges, source/target are entity names, not IDs
+  const outgoing = relationshipStore.getBySource(entity.name);
   for (const rel of outgoing) {
     if (rel.supersededBy) continue;
+    if (rel.type !== 'co_occurs_with') continue;  // Only use co-occurrence edges
     neighbors.push({
       entityId: rel.target,
-      entityName: rel.value || rel.target,
-      activation: 1.0,
+      entityName: rel.target,  // Target is an entity name
+      activation: rel.confidence || 1.0,
       relationship: rel
     });
   }
   
-  // Get incoming relationships (as target)
-  const incoming = relationshipStore.getByTarget(entity.id);
+  // Get incoming relationships (entity name as target)
+  const incoming = relationshipStore.getByTarget(entity.name);
   for (const rel of incoming) {
     if (rel.supersededBy) continue;
+    if (rel.type !== 'co_occurs_with') continue;
     neighbors.push({
       entityId: rel.source,
-      entityName: rel.source,
-      activation: 1.0,
+      entityName: rel.source,  // Source is an entity name
+      activation: rel.confidence || 1.0,
       relationship: rel
     });
   }
   
   // Sort by confidence and limit
-  neighbors.sort((a, b) => b.relationship.confidence - a.relationship.confidence);
+  neighbors.sort((a, b) => b.activation - a.activation);
   return neighbors.slice(0, maxNeighbors);
 }
 

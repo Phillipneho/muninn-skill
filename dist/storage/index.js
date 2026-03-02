@@ -151,6 +151,7 @@ export class MemoryStore {
         timestamp TEXT,
         session_id TEXT,
         ttl INTEGER,
+        user_id TEXT DEFAULT 'default',
         created_at TEXT DEFAULT (datetime('now')),
         updated_at TEXT DEFAULT (datetime('now')),
         deleted_at TEXT
@@ -158,6 +159,7 @@ export class MemoryStore {
 
       CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp);
       CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
+      CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);
       
       CREATE TABLE IF NOT EXISTS entities (
         name TEXT PRIMARY KEY,
@@ -204,6 +206,7 @@ export class MemoryStore {
         const embedding = await generateEmbedding(content);
         const now = new Date().toISOString();
         const timestamp = options.timestamp || now;
+        const userId = options.user_id || 'default';
         // ========================================================================
         // TEMPORAL RESOLUTION: Convert relative dates to absolute
         // ========================================================================
@@ -239,11 +242,11 @@ export class MemoryStore {
         // Convert embedding to base64 for storage
         const embeddingBuffer = Buffer.from(new Float32Array(embedding).buffer);
         const stmt = this.db.prepare(`
-      INSERT INTO memories (id, type, content, resolved_content, title, summary, entities, topics, embedding, salience, timestamp, session_id, ttl, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO memories (id, type, content, resolved_content, title, summary, entities, topics, embedding, salience, timestamp, session_id, ttl, user_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
         stmt.run(id, type, content, resolvedContent, // Resolved date content or null
-        options.title || null, options.summary || null, JSON.stringify(canonicalEntities), JSON.stringify(options.topics || []), embeddingBuffer, options.salience || 0.5, timestamp, options.sessionId || null, options.ttl || null, now, now);
+        options.title || null, options.summary || null, JSON.stringify(canonicalEntities), JSON.stringify(options.topics || []), embeddingBuffer, options.salience || 0.5, timestamp, options.sessionId || null, options.ttl || null, userId, now, now);
         // Update entity counts (use canonical names)
         if (canonicalEntities.length) {
             const entityStmt = this.db.prepare(`
@@ -291,7 +294,7 @@ export class MemoryStore {
             /likely|consider|pursue|interested|would be|if she|if he|if they/i.test(context);
         if (isMultiHopQuery) {
             // Use entity-centric retrieval for multi-hop reasoning
-            const entityResults = await this.recallEntityContext(context, { limit });
+            const entityResults = await this.recallEntityContext(context, { limit, user_id: options.user_id });
             if (entityResults.length > 0) {
                 return entityResults;
             }
@@ -301,10 +304,19 @@ export class MemoryStore {
         // ========================================================================
         // Extract temporal reference from query (e.g., "on Tuesday", "yesterday")
         const temporalQuery = extractTemporalMetadata(context, new Date());
-        // Get all non-deleted memories
-        let memories = this.db.prepare(`
-      SELECT * FROM memories WHERE deleted_at IS NULL
-    `).all();
+        // Get all non-deleted memories, filtered by user if specified
+        const targetUserId = options.user_id;
+        let memories;
+        if (targetUserId) {
+            memories = this.db.prepare(`
+        SELECT * FROM memories WHERE deleted_at IS NULL AND (user_id = ? OR user_id = 'default')
+      `).all(targetUserId);
+        }
+        else {
+            memories = this.db.prepare(`
+        SELECT * FROM memories WHERE deleted_at IS NULL
+      `).all();
+        }
         // Filter by temporal reference if present with high confidence
         if (temporalQuery.eventTime && temporalQuery.confidence > 0.7) {
             const targetDate = temporalQuery.eventTime; // YYYY-MM-DD format
@@ -342,6 +354,7 @@ export class MemoryStore {
         memories = memories.map(row => ({
             ...row,
             sessionId: row.session_id, // Map snake_case to camelCase
+            user_id: row.user_id || undefined,
             entities: JSON.parse(row.entities || '[]'),
             topics: JSON.parse(row.topics || '[]'),
             embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
@@ -354,9 +367,13 @@ export class MemoryStore {
         if (options.entities?.length) {
             memories = memories.filter(m => options.entities.some(e => m.entities.includes(e)));
         }
+        // Filter by user_id (multi-tenancy)
+        if (options.user_id) {
+            memories = memories.filter(m => m.user_id === options.user_id || !m.user_id || m.user_id === 'default');
+        }
         // If too few memories, fall back to simple similarity
         if (memories.length < 3) {
-            return this.simpleRecall(context, limit);
+            return this.simpleRecall(context, limit, options.user_id);
         }
         // ========================================================================
         // P8.2: TEMPORAL EVOLUTION HANDLING
@@ -412,7 +429,7 @@ export class MemoryStore {
         }
         catch (error) {
             console.warn('Hybrid retrieval failed, using fallback:', error);
-            return this.simpleRecall(context, limit);
+            return this.simpleRecall(context, limit, undefined);
         }
     }
     /**
@@ -473,14 +490,23 @@ export class MemoryStore {
     /**
      * Simple semantic recall fallback
      */
-    async simpleRecall(context, limit) {
+    async simpleRecall(context, limit, user_id) {
         const queryEmbedding = await generateEmbedding(context);
-        let memories = this.db.prepare(`
-      SELECT * FROM memories WHERE deleted_at IS NULL
-    `).all();
+        let memories;
+        if (user_id) {
+            memories = this.db.prepare(`
+        SELECT * FROM memories WHERE deleted_at IS NULL AND (user_id = ? OR user_id = 'default')
+      `).all(user_id);
+        }
+        else {
+            memories = this.db.prepare(`
+        SELECT * FROM memories WHERE deleted_at IS NULL
+      `).all();
+        }
         memories = memories.map(row => ({
             ...row,
             sessionId: row.session_id, // Map snake_case to camelCase
+            user_id: row.user_id || undefined,
             entities: JSON.parse(row.entities || '[]'),
             topics: JSON.parse(row.topics || '[]'),
             embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
@@ -692,7 +718,7 @@ export class MemoryStore {
         const entities = extractEntitiesFromText(query);
         if (entities.length === 0) {
             // Fall back to regular recall (but skip multi-hop detection to avoid recursion)
-            return this.simpleRecall(query, limit);
+            return this.simpleRecall(query, limit, options.user_id);
         }
         // Get all memories for each entity
         const allMemories = [];

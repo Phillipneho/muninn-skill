@@ -22,6 +22,7 @@ export interface Memory {
     timestamp: string;
     sessionId?: string;
     ttl?: number;
+    user_id?: string;
     created_at: string;
     updated_at: string;
     deleted_at?: string;
@@ -95,6 +96,7 @@ export declare class MemoryStore {
         sessionId?: string;
         ttl?: number;
         sessionDate?: Date | string;
+        user_id?: string;
     }): Promise<Memory>;
     getMemory(id: string): Memory | null;
     recall(context: string, options?: {
@@ -102,6 +104,7 @@ export declare class MemoryStore {
         entities?: string[];
         topics?: string[];
         limit?: number;
+        user_id?: string;
     }): Promise<Memory[]>;
     /**
      * Internal recall with hybrid search
@@ -130,6 +133,7 @@ export declare class MemoryStore {
      */
     recallEntityContext(query: string, options?: {
         limit?: number;
+        user_id?: string;
     }): Promise<Memory[]>;
     close(): void;
 }
