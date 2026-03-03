@@ -21,6 +21,7 @@
  */
 
 import MemoryStore from '../dist/storage/index.js';
+import { generateAnswer } from '../src/retrieval/answer-generator.js';
 import { readFileSync } from 'fs';
 
 interface LOCOMOQuestion {
@@ -144,16 +145,21 @@ async function runBenchmark() {
       // Recall from memory
       const results = await store.recall(qa.question, { limit: 5 });
 
-      // Generate answer from top result
-      let generatedAnswer = 'I don\'t have information about that.';
-      if (results.length > 0) {
-        // Use the top result's content as the answer
-        generatedAnswer = results[0].content.slice(0, 500);
+      // Generate answer using LLM (qwen is fast locally)
+      let generatedAnswer: string;
+      try {
+        generatedAnswer = await generateAnswer(qa.question, results, {
+          maxTokens: 50,
+          model: 'qwen2.5:1.5b'
+        });
+      } catch (e) {
+        // Fallback to raw retrieval if LLM fails
+        generatedAnswer = results.length > 0 ? results[0].content.slice(0, 500) : "I don't have information about that.";
       }
 
       const responseTimeMs = Date.now() - startTime;
 
-      // Simple matching: check if expected answer appears in generated answer
+      // Fast evaluation: use substring matching
       const expectedAnswer = String(qa.answer);
       const expectedLower = expectedAnswer.toLowerCase();
       const generatedLower = generatedAnswer.toLowerCase();
