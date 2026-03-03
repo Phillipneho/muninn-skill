@@ -9,7 +9,9 @@ import { v4 as uuidv4 } from 'uuid';
 export type RelationshipType = 
   | 'has_target' | 'has_customer' | 'uses' | 'built_by' | 'employs' | 'has_priority' | 'part_of'
   // P7: Conversational relationships for multi-hop reasoning
-  | 'went_to' | 'works_at' | 'knows' | 'has_interest' | 'has_identity' | 'has_plan';
+  | 'went_to' | 'works_at' | 'knows' | 'has_interest' | 'has_identity' | 'has_plan'
+  // Entity co-occurrence relationships
+  | 'co_occurs_with';
 
 export interface Relationship {
   id: string;
@@ -66,7 +68,9 @@ export class RelationshipStore {
     let supersededRel: Relationship | undefined;
     
     if (conflicting) {
-      // Mark the old relationship as superseded
+      // Mark the old relationship as superseded by the NEW relationship
+      // UPDATE superseded_by = ? (new id) WHERE id = ? (old id)
+      // Arguments: new_id, old_id
       const updateStmt = this.db.prepare(`
         UPDATE kg_relationships SET superseded_by = ? WHERE id = ?
       `);
@@ -75,7 +79,7 @@ export class RelationshipStore {
       supersededRel = conflicting;
     }
     
-    // Insert new relationship
+    // Insert new relationship (should NOT set superseded_by to itself!)
     const stmt = this.db.prepare(`
       INSERT INTO kg_relationships (id, source, target, type, value, timestamp, session_id, confidence, superseded_by)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -90,7 +94,7 @@ export class RelationshipStore {
       rel.timestamp,
       rel.sessionId || null,
       rel.confidence,
-      supersededBy || null
+      null  // Not superseded when created
     );
     
     return {

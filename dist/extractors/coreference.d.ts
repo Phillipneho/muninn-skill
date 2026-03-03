@@ -1,74 +1,75 @@
 /**
- * Coreference Resolution for Muninn Memory System
+ * Coreference Resolution
  *
- * Resolves pronouns, aliases, and references to canonical entity names
- * BEFORE memory storage to prevent entity fragmentation.
+ * Rule-based pronoun resolution for multi-hop queries.
+ * Maps pronouns (she/her/he/him/they/them) to their antecedents
+ * based on recent entity mentions in the text.
  *
- * This fixes the LOCOMO benchmark gap where "Phillip", "him", and
- * "the Program Manager" were seen as 3 different entities.
- *
- * Uses LLM-based entity linking via local Ollama.
+ * Based on: Muninn Multi-Hop Improvements Spec (2026-03-03)
  */
-import { MemoryStore } from '../storage/index.js';
-export interface EntityAlias {
-    canonical: string;
-    aliases: string[];
-    type: string;
+export interface CoreferenceResolution {
+    pronoun: string;
+    antecedent: string;
+    position: number;
+    replaced: boolean;
 }
 export interface CoreferenceResult {
-    originalText: string;
     resolvedText: string;
-    entityMap: Map<string, string>;
-    newEntitiesFound: string[];
+    resolutions: CoreferenceResolution[];
 }
 /**
- * Initialize entity cache from memory store
- * Should be called when memory system starts
+ * Gender and number pronoun mappings
+ * Maps pronouns to potential antecedent categories
  */
-export declare function initEntityCache(store: MemoryStore): Promise<void>;
+declare const PRONOUN_MAP: Record<string, string[]>;
 /**
- * Add a new entity to the cache
+ * Common verbs that establish entity identity
  */
-export declare function addToEntityCache(canonical: string, aliases: string[], type: string): void;
+declare const IDENTITY_VERBS: Set<string>;
 /**
- * Get canonical name for a pronoun or alias
- */
-export declare function resolveEntity(mention: string): string | null;
-/**
- * Clear entity cache (for testing)
- */
-export declare function clearEntityCache(): void;
-/**
- * Resolve coreferences in text
+ * Resolve coreferences in text using rule-based approach
  *
- * @param text - Raw input text
- * @param knownEntities - Optional list of known entities (from memory store)
- * @param useLLM - Whether to use LLM for resolution (default: true)
- * @returns CoreferenceResult with resolved text and entity mappings
- */
-export declare function resolveCoreferences(text: string, knownEntities?: string[], useLLM?: boolean): Promise<CoreferenceResult>;
-/**
- * Simple coreference resolution without LLM
- * Uses pattern matching and entity cache only
- */
-export declare function resolveCoreferencesSimple(text: string, knownEntities?: string[]): CoreferenceResult;
-/**
- * Resolve coreferences before storing memory
+ * Algorithm:
+ * 1. Split text into sentences
+ * 2. Track recent entities in context
+ * 3. When pronoun found, match to most recent compatible entity
+ * 4. Replace pronoun with antecedent if match found
  *
- * Returns metadata to be stored alongside the memory
+ * @param text - Input text to resolve
+ * @param knownEntities - Map of lowercase entity name -> entity name
+ * @returns Resolved text and list of resolutions made
  */
-export interface MemoryCoreferenceMetadata {
-    originalContent: string;
-    resolvedContent: string;
-    coreferenceMap: Record<string, string>;
-    newEntities: string[];
-}
+export declare function resolveCoreferences(text: string, knownEntities: Map<string, string>): CoreferenceResult;
 /**
- * Pre-process content before memory storage
+ * Resolve coreferences from extracted entities (simpler version)
+ *
+ * @param text - Input text
+ * @param entities - Array of entity names found in text
+ * @returns Resolved text
  */
-export declare function preprocessForMemory(content: string, store?: MemoryStore): Promise<MemoryCoreferenceMetadata>;
+export declare function resolveCoreferencesFromEntities(text: string, entities: string[]): CoreferenceResult;
 /**
- * Simple version without LLM (faster, for batch processing)
+ * Extract potential antecedents from query context
+ *
+ * @param query - User query
+ * @param entityNames - Known entity names
+ * @returns Map of potential antecedents
  */
-export declare function preprocessForMemorySimple(content: string, store?: MemoryStore): MemoryCoreferenceMetadata;
+export declare function extractAntecedentsFromQuery(query: string, entityNames: string[]): Map<string, string>;
+/**
+ * Check if text likely contains coreferences
+ *
+ * @param text - Text to check
+ * @returns True if likely contains pronouns needing resolution
+ */
+export declare function likelyHasCoreferences(text: string): boolean;
+/**
+ * Escape special regex characters in a string
+ */
+declare function escapeRegex(string: string): string;
+/**
+ * Get pronoun category
+ */
+declare function getPronounCategory(pronoun: string): 'female' | 'male' | 'neutral' | 'other';
+export { PRONOUN_MAP, IDENTITY_VERBS, getPronounCategory, escapeRegex };
 //# sourceMappingURL=coreference.d.ts.map

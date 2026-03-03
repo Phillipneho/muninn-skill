@@ -21,8 +21,10 @@ import { hybridSearch } from '../retrieval/hybrid.js';
 import { filterMemories, scoreForQuestionType } from '../retrieval/filter.js';
 import { normalizeEntities, createAliasStore, type EntityAliasStore } from '../extractors/normalize.js';
 import { extractTemporalMetadata } from '../extractors/temporal-metadata.js';
-import { EntityStore } from './entity-store.js';
+import { extractDates, detectTemporalQuery } from '../extractors/temporal.js';
+import { EntityStore, EntityType } from './entity-store.js';
 import { RelationshipStore } from './relationship-store.js';
+import { extractRelationships, inferEntityType } from '../extractors/relationships.js';
 
 // Alias store for spelling variants and entity aliases
 let aliasStore: EntityAliasStore | null = null;
@@ -169,8 +171,50 @@ export interface VaultStats {
   procedures: number;
 }
 
-// Embedding function using Ollama
+// Embedding function - supports Ollama (local), OpenAI, or zero-vector fallback (cloud)
 export async function generateEmbedding(text: string): Promise<number[]> {
+  const mode = process.env.EMBEDDING_MODE || 'ollama';
+  
+  // Zero-vector fallback for cloud deployments without Ollama
+  if (mode === 'zero') {
+    // Return a deterministic pseudo-embedding based on text hash
+    // This enables basic keyword matching without semantic search
+    const hash = text.split('').reduce((acc, char) => {
+      return ((acc << 5) - acc + char.charCodeAt(0)) | 0;
+    }, 0);
+    const embedding = new Array(768).fill(0);
+    // Add some variation based on hash to differentiate texts slightly
+    for (let i = 0; i < 10; i++) {
+      embedding[i] = ((hash >> (i * 3)) & 0x7) / 10 - 0.4; // small values -0.4 to 0.3
+    }
+    return embedding;
+  }
+  
+  // OpenAI embeddings (future)
+  if (mode === 'openai') {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new Error('OPENAI_API_KEY required for EMBEDDING_MODE=openai');
+    }
+    const response = await fetch('https://api.openai.com/v1/embeddings', {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: 'text-embedding-3-small',
+        input: text
+      })
+    });
+    if (!response.ok) {
+      throw new Error(`OpenAI embedding failed: ${response.statusText}`);
+    }
+    const data = await response.json() as { data: Array<{ embedding: number[] }> };
+    return data.data[0].embedding;
+  }
+  
+  // Default: Ollama (local)
   const response = await fetch('http://localhost:11434/api/embeddings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -181,14 +225,14 @@ export async function generateEmbedding(text: string): Promise<number[]> {
   });
   
   if (!response.ok) {
-    throw new Error(`Ollama embedding failed: ${response.statusText}`);
+    // Fallback to zero-vector if Ollama not available
+    console.warn(`Ollama embedding failed (${response.statusText}), falling back to zero-vector`);
+    return new Array(768).fill(0);
   }
   
   const data = await response.json() as { embedding: number[] };
   return data.embedding;
 }
-
-// Cosine similarity
 function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length !== b.length) return 0;
   
@@ -295,6 +339,22 @@ export class MemoryStore {
       CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
       CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
       CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
+      
+      -- TEMPORAL INDEX: Store extracted dates for fast temporal queries
+      CREATE TABLE IF NOT EXISTS temporal_index (
+        id TEXT PRIMARY KEY,
+        memory_id TEXT NOT NULL,
+        date TEXT NOT NULL,           -- ISO format date (YYYY-MM-DD)
+        date_type TEXT NOT NULL,      -- 'absolute', 'relative', 'range'
+        granularity TEXT NOT NULL,    -- 'hour', 'day', 'week', 'month', 'year'
+        original_text TEXT NOT NULL,  -- Original text that was parsed
+        confidence REAL NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+      );
+      
+      CREATE INDEX IF NOT EXISTS idx_temporal_memory ON temporal_index(memory_id);
+      CREATE INDEX IF NOT EXISTS idx_temporal_date ON temporal_index(date);
     `);
     
     console.log('📦 Memory database initialized');
@@ -405,6 +465,113 @@ export class MemoryStore {
         entityStmt.run(entity, now, now);
       }
     }
+
+    // ========================================================================
+    // PHASE 1.7: KNOWLEDGE GRAPH CONSTRUCTION
+    // Register entities and extract relationships
+    // ========================================================================
+
+    // Register entities in EntityStore with inferred types
+    for (const entityName of canonicalEntities) {
+      const entityType = inferEntityType(entityName) as EntityType;
+      this.entityStore.addEntity({
+        name: entityName,
+        type: entityType,
+        aliases: []
+      });
+    }
+
+    // Extract relationships from content
+    const knownEntities = new Map<string, string>();
+    for (const entity of canonicalEntities) {
+      knownEntities.set(entity.toLowerCase(), entity);
+    }
+    
+    const extractedRels = extractRelationships(content, knownEntities);
+    
+    // Store relationships in knowledge graph
+    for (const rel of extractedRels) {
+      // Find or create entity IDs for source and target
+      let sourceEntity = this.entityStore.findEntity(rel.source);
+      if (!sourceEntity) {
+        sourceEntity = this.entityStore.addEntity({
+          name: rel.source,
+          type: inferEntityType(rel.source) as EntityType,
+          aliases: []
+        });
+      }
+      
+      // For numeric targets (e.g., "$2000/month"), use a placeholder
+      let targetEntity = this.entityStore.findEntity(rel.target);
+      if (!targetEntity && !rel.value) {
+        targetEntity = this.entityStore.addEntity({
+          name: rel.target,
+          type: inferEntityType(rel.target) as EntityType,
+          aliases: []
+        });
+      }
+      
+      // Store the relationship
+      if (sourceEntity && (targetEntity || rel.value)) {
+        this.relationshipStore.addRelationship({
+          source: sourceEntity.id,
+          target: targetEntity?.id || rel.target,
+          type: rel.type,
+          value: rel.value,
+          timestamp: now,
+          sessionId: options.sessionId || 'default',
+          confidence: rel.confidence
+        });
+      }
+    }
+    
+    // ==========================================================================
+    // TEMPORAL INDEX: Store all extracted dates for fast temporal queries
+    // ==========================================================================
+    
+    // Use session date as reference if provided, otherwise use timestamp
+    const temporalRefDate = options.sessionDate 
+      ? (typeof options.sessionDate === 'string' ? new Date(options.sessionDate) : options.sessionDate)
+      : new Date(timestamp);
+    
+    const extractedTemporalDates = extractDates(content, temporalRefDate);
+    
+    if (extractedTemporalDates.length > 0) {
+      const temporalStmt = this.db.prepare(`
+        INSERT INTO temporal_index (id, memory_id, date, date_type, granularity, original_text, confidence)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+      
+      for (const td of extractedTemporalDates) {
+        const tdId = `t_${uuidv4().slice(0, 8)}`;
+        const dateStr = td.date.toISOString().split('T')[0]; // YYYY-MM-DD
+        
+        temporalStmt.run(
+          tdId,
+          id,
+          dateStr,
+          td.dateType,
+          td.granularity,
+          td.originalText,
+          td.confidence
+        );
+        
+        // If it's a range, also store the end date
+        if (td.endDate) {
+          const endDateStr = td.endDate.toISOString().split('T')[0];
+          const tdIdEnd = `t_${uuidv4().slice(0, 8)}`;
+          temporalStmt.run(
+            tdIdEnd,
+            id,
+            endDateStr,
+            td.dateType,
+            td.granularity,
+            td.originalText + ' (end)',
+            td.confidence
+          );
+        }
+      }
+    }
     
     return this.getMemory(id)!;
   }
@@ -487,6 +654,27 @@ export class MemoryStore {
     if (temporalQuery.eventTime && temporalQuery.confidence > 0.7) {
       const targetDate = temporalQuery.eventTime; // YYYY-MM-DD format
 
+      // Try to find memories using the temporal_index table first
+      const temporalMatches = this.db.prepare(`
+        SELECT DISTINCT m.* FROM memories m
+        INNER JOIN temporal_index t ON m.id = t.memory_id
+        WHERE t.date = ? AND m.deleted_at IS NULL
+      `).all(targetDate) as any[];
+
+      // If we have temporal index matches, use those
+      if (temporalMatches.length > 0) {
+        console.log(`Temporal index found ${temporalMatches.length} memories for "${targetDate}"`);
+        const parsed = temporalMatches.map(row => ({
+          ...row,
+          sessionId: row.session_id,
+          entities: JSON.parse(row.entities || '[]'),
+          topics: JSON.parse(row.topics || '[]'),
+          embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
+        }));
+        return parsed.slice(0, limit);
+      }
+
+      // Fallback to content-based filtering
       memories = memories.filter(m => {
         // Check resolved_content first (contains [YYYY-MM-DD] prefix)
         if (m.resolved_content && m.resolved_content.includes(`[${targetDate}]`)) {
@@ -517,6 +705,117 @@ export class MemoryStore {
       // If no exact matches, fall through to semantic search
       // but log that we tried temporal filtering
       console.log(`Temporal filter for "${targetDate}" found no exact matches, falling back to semantic search`);
+    }
+    
+    // ==========================================================================
+    // TEMPORAL QUERY DETECTION: Handle "When did..." questions
+    // And also handle queries with explicit dates like "in June 2022"
+    // ==========================================================================
+    
+    const temporalQueryDetection = detectTemporalQuery(context);
+    
+    // Also try to extract any dates from the query directly
+    const queryDates = extractDates(context);
+    
+    if (temporalQueryDetection.isTemporal || queryDates.length > 0) {
+      // This is a temporal question OR has dates in the query
+      // Extract key entities from the query to narrow down temporal search
+      const queryEntities = extractEntitiesFromText(context);
+      
+      // If we have explicit dates in the query, prioritize temporal_index
+      if (queryDates.length > 0) {
+        const dateStrs = queryDates.map(d => {
+          const iso = d.date.toISOString ? d.date.toISOString() : String(d.date);
+          return iso.split('T')[0];
+        });
+        
+        // Search using temporal_index
+        const temporalMemories: any[] = [];
+        for (const dateStr of dateStrs) {
+          // Try exact date match
+          const exactMatches = this.db.prepare(`
+            SELECT DISTINCT m.* FROM memories m
+            INNER JOIN temporal_index t ON m.id = t.memory_id
+            WHERE t.date = ? AND m.deleted_at IS NULL
+          `).all(dateStr) as any[];
+          
+          for (const m of exactMatches) {
+            const exists = temporalMemories.find(x => x.id === m.id);
+            if (!exists) temporalMemories.push(m);
+          }
+          
+          // Try date range match (for month/year queries)
+          if (queryDates[0].granularity === 'month' || queryDates[0].granularity === 'year') {
+            const rangeStart = queryDates[0].date;
+            const rangeEnd = queryDates[0].endDate || queryDates[0].date;
+            
+            const rangeMatches = this.db.prepare(`
+              SELECT DISTINCT m.* FROM memories m
+              INNER JOIN temporal_index t ON m.id = t.memory_id
+              WHERE t.date >= ? AND t.date <= ? AND m.deleted_at IS NULL
+            `).all(
+              rangeStart.toISOString().split('T')[0],
+              rangeEnd.toISOString().split('T')[0]
+            ) as any[];
+            
+            for (const m of rangeMatches) {
+              const exists = temporalMemories.find(x => x.id === m.id);
+              if (!exists) temporalMemories.push(m);
+            }
+          }
+        }
+        
+        if (temporalMemories.length > 0) {
+          console.log(`Temporal index found ${temporalMemories.length} memories for dates: ${dateStrs.join(', ')}`);
+          
+          const parsed = temporalMemories.slice(0, limit).map(row => ({
+            ...row,
+            sessionId: row.session_id,
+            entities: JSON.parse(row.entities || '[]'),
+            topics: JSON.parse(row.topics || '[]'),
+            embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
+          }));
+          
+          return this.recallInternal(context, parsed, limit);
+        }
+        
+        // Fallback to content search if no temporal_index matches
+        console.log(`Temporal index had no matches for dates: ${dateStrs.join(', ')}, trying content search`);
+      }
+      
+      // Try entity-based search for "When did X..." type questions
+      if (queryEntities.length > 0) {
+        const entityPlaceholders = queryEntities.map(() => '?').join(',');
+        
+        // Get all memories with the entity
+        let entityMemories = this.db.prepare(`
+          SELECT * FROM memories 
+          WHERE deleted_at IS NULL 
+          AND (${queryEntities.map(() => 'content LIKE ?').join(' OR ')})
+        `).all(...queryEntities.map(e => `%${e}%`)) as any[];
+        
+        if (entityMemories.length > 0) {
+          // Sort by temporal relevance (memories with temporal metadata first)
+          entityMemories.sort((a, b) => {
+            const aHasTemp = a.resolved_content ? 1 : 0;
+            const bHasTemp = b.resolved_content ? 1 : 0;
+            return bHasTemp - aHasTemp;
+          });
+          
+          const parsed = entityMemories.slice(0, limit).map(row => ({
+            ...row,
+            sessionId: row.session_id,
+            entities: JSON.parse(row.entities || '[]'),
+            topics: JSON.parse(row.topics || '[]'),
+            embedding: Array.from(new Float32Array(row.embedding?.buffer || new ArrayBuffer(0)))
+          }));
+          
+          // Use hybrid to re-rank them
+          if (parsed.length > 0) {
+            return this.recallInternal(context, parsed, limit);
+          }
+        }
+      }
     }
     
     // Parse stored fields

@@ -40,7 +40,9 @@ export class RelationshipStore {
         let supersededBy;
         let supersededRel;
         if (conflicting) {
-            // Mark the old relationship as superseded
+            // Mark the old relationship as superseded by the NEW relationship
+            // UPDATE superseded_by = ? (new id) WHERE id = ? (old id)
+            // Arguments: new_id, old_id
             const updateStmt = this.db.prepare(`
         UPDATE kg_relationships SET superseded_by = ? WHERE id = ?
       `);
@@ -48,12 +50,13 @@ export class RelationshipStore {
             supersededBy = id;
             supersededRel = conflicting;
         }
-        // Insert new relationship
+        // Insert new relationship (should NOT set superseded_by to itself!)
         const stmt = this.db.prepare(`
       INSERT INTO kg_relationships (id, source, target, type, value, timestamp, session_id, confidence, superseded_by)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-        stmt.run(id, rel.source, rel.target, rel.type, rel.value || null, rel.timestamp, rel.sessionId || null, rel.confidence, supersededBy || null);
+        stmt.run(id, rel.source, rel.target, rel.type, rel.value || null, rel.timestamp, rel.sessionId || null, rel.confidence, null // Not superseded when created
+        );
         return {
             relationship: this.getById(id),
             superseded: supersededRel

@@ -17,6 +17,15 @@ export {
   type EntityAliasStore
 } from './normalize.js';
 
+// Re-export temporal extraction
+export {
+  extractDates,
+  detectTemporalQuery,
+  formatDate,
+  formatDateRange,
+  type TemporalExtraction
+} from './temporal.js';
+
 // Import entity extraction
 import { extractEntities as extractEntitiesImpl, Entity } from './entities.js';
 

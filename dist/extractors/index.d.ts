@@ -6,6 +6,7 @@
  */
 export { routeContent, routeWithKeywords, RoutingResult } from './router.js';
 export { normalizeEntities, extractWithNormalization, createAliasStore, type NormalizedEntity, type EntityAliasStore } from './normalize.js';
+export { extractDates, detectTemporalQuery, formatDate, formatDateRange, type TemporalExtraction } from './temporal.js';
 import { extractEntities as extractEntitiesImpl } from './entities.js';
 export interface ExtractionResult {
     type: 'episodic' | 'semantic' | 'procedural';

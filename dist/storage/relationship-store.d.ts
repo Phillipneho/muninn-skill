@@ -3,7 +3,7 @@
  * Stores relationships with timestamps, sessionId, and contradiction tracking
  */
 import Database from 'better-sqlite3';
-export type RelationshipType = 'has_target' | 'has_customer' | 'uses' | 'built_by' | 'employs' | 'has_priority' | 'part_of' | 'went_to' | 'works_at' | 'knows' | 'has_interest' | 'has_identity' | 'has_plan';
+export type RelationshipType = 'has_target' | 'has_customer' | 'uses' | 'built_by' | 'employs' | 'has_priority' | 'part_of' | 'went_to' | 'works_at' | 'knows' | 'has_interest' | 'has_identity' | 'has_plan' | 'co_occurs_with';
 export interface Relationship {
     id: string;
     source: string;

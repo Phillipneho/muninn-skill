@@ -8,6 +8,8 @@
 export { routeContent, routeWithKeywords } from './router.js';
 // Re-export normalization
 export { normalizeEntities, extractWithNormalization, createAliasStore } from './normalize.js';
+// Re-export temporal extraction
+export { extractDates, detectTemporalQuery, formatDate, formatDateRange } from './temporal.js';
 // Import entity extraction
 import { extractEntities as extractEntitiesImpl } from './entities.js';
 // Extract episodic memory data (events, conversations)

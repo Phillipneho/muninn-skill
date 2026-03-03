@@ -5,6 +5,7 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { KNOWLEDGE_TOOLS, KNOWLEDGE_HANDLERS } from './knowledge-tools.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,

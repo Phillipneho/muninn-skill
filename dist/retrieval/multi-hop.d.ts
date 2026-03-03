@@ -12,6 +12,7 @@
 import type { Memory } from '../storage/index.js';
 import { EntityStore } from '../storage/entity-store.js';
 import { RelationshipStore } from '../storage/relationship-store.js';
+import { Path } from './graph-traversal.js';
 export interface MultiHopOptions {
     /** Maximum memories to return (default: 20) */
     limit?: number;
@@ -41,6 +42,10 @@ export interface MultiHopResult {
     confidence: number;
     usedFallback: boolean;
     method: string;
+    /** Paths found between entities (for multi-hop queries) */
+    paths?: Path[];
+    /** Entity pairs that were queried for paths */
+    pathEntities?: string[];
 }
 export interface TemporalConstraint {
     after?: Date;

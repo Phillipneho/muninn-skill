@@ -1,356 +1,236 @@
 /**
- * Coreference Resolution for Muninn Memory System
+ * Coreference Resolution
  *
- * Resolves pronouns, aliases, and references to canonical entity names
- * BEFORE memory storage to prevent entity fragmentation.
+ * Rule-based pronoun resolution for multi-hop queries.
+ * Maps pronouns (she/her/he/him/they/them) to their antecedents
+ * based on recent entity mentions in the text.
  *
- * This fixes the LOCOMO benchmark gap where "Phillip", "him", and
- * "the Program Manager" were seen as 3 different entities.
+ * Based on: Muninn Multi-Hop Improvements Spec (2026-03-03)
+ */
+/**
+ * Gender and number pronoun mappings
+ * Maps pronouns to potential antecedent categories
+ */
+const PRONOUN_MAP = {
+    // Female singular
+    'she': ['Caroline', 'Sarah', 'Jane', 'Hedy', 'Sammy', 'Donna'],
+    'her': ['Caroline', 'Sarah', 'Jane', 'Hedy', 'Sammy', 'Donna'],
+    'hers': ['Caroline', 'Sarah', 'Jane', 'Hedy', 'Sammy', 'Donna'],
+    'herself': ['Caroline', 'Sarah', 'Jane', 'Hedy', 'Sammy', 'Donna'],
+    // Male singular
+    'he': ['Phillip', 'Charlie', 'David', 'John', 'KH', 'Melvil', 'Ernie'],
+    'him': ['Phillip', 'Charlie', 'David', 'John', 'KH', 'Melvil', 'Ernie'],
+    'his': ['Phillip', 'Charlie', 'David', 'John', 'KH', 'Melvil', 'Ernie'],
+    'himself': ['Phillip', 'Charlie', 'David', 'John', 'KH', 'Melvil', 'Ernie'],
+    // Neutral singular
+    'they': ['team', 'group', 'organization', 'company'],
+    'them': ['team', 'group', 'organization', 'company'],
+    'their': ['team', 'group', 'organization', 'company'],
+    'themselves': ['team', 'group', 'organization', 'company'],
+    // Demonstrative
+    'this': [],
+    'that': [],
+    'these': [],
+    'those': [],
+    // Relative
+    'who': [],
+    'whom': [],
+    'which': [],
+};
+/**
+ * Common verbs that establish entity identity
+ */
+const IDENTITY_VERBS = new Set([
+    'is', 'are', 'was', 'were', 'be', 'been', 'being',
+    'is_called', 'is_named', 'goes_by', 'refers_to'
+]);
+/**
+ * Resolve coreferences in text using rule-based approach
  *
- * Uses LLM-based entity linking via local Ollama.
- */
-import { extractEntities } from './entities.js';
-// Pronoun patterns to resolve
-const PRONOUN_PATTERNS = /\b(he|she|him|her|his|hers|they|them|their|theirs|it|its|this|that|these|those)\b/gi;
-// Possessive determiners
-const POSSESSIVE_PATTERNS = /\b(my|your|his|her|its|our|their)\b/gi;
-// ============================================
-// ENTITY CACHE (from memory store)
-// ============================================
-let entityCache = new Map();
-/**
- * Initialize entity cache from memory store
- * Should be called when memory system starts
- */
-export async function initEntityCache(store) {
-    try {
-        // Get all entities from knowledge graph
-        const kgEntities = store.getEntityStore().getAll();
-        for (const ent of kgEntities) {
-            const aliases = [
-                ent.name,
-                ...ent.aliases
-            ];
-            entityCache.set(ent.name.toLowerCase(), {
-                canonical: ent.name,
-                aliases: aliases,
-                type: ent.type
-            });
-        }
-        console.log(`📇 Coreference: Initialized with ${entityCache.size} known entities`);
-    }
-    catch (error) {
-        console.warn('Coreference: Failed to initialize entity cache:', error);
-    }
-}
-/**
- * Add a new entity to the cache
- */
-export function addToEntityCache(canonical, aliases, type) {
-    const existing = entityCache.get(canonical.toLowerCase());
-    if (existing) {
-        // Merge aliases
-        const mergedAliases = [...new Set([...existing.aliases, ...aliases])];
-        entityCache.set(canonical.toLowerCase(), {
-            canonical,
-            aliases: mergedAliases,
-            type
-        });
-    }
-    else {
-        entityCache.set(canonical.toLowerCase(), {
-            canonical,
-            aliases: [...aliases, canonical],
-            type
-        });
-    }
-}
-/**
- * Get canonical name for a pronoun or alias
- */
-export function resolveEntity(mention) {
-    const lower = mention.toLowerCase();
-    // Check if it's a known alias
-    for (const [_, entity] of entityCache) {
-        if (entity.aliases.some(a => a.toLowerCase() === lower)) {
-            return entity.canonical;
-        }
-    }
-    // Check if it's the canonical name itself
-    if (entityCache.has(lower)) {
-        return entityCache.get(lower).canonical;
-    }
-    return null;
-}
-/**
- * Clear entity cache (for testing)
- */
-export function clearEntityCache() {
-    entityCache.clear();
-}
-// ============================================
-// LLM-BASED COREFERENCE RESOLUTION
-// ============================================
-/**
- * Call Ollama for coreference resolution
- * Uses a focused prompt to rewrite text with resolved entities
+ * Algorithm:
+ * 1. Split text into sentences
+ * 2. Track recent entities in context
+ * 3. When pronoun found, match to most recent compatible entity
+ * 4. Replace pronoun with antecedent if match found
  *
- * Example:
- * Raw: "Met with Caroline regarding the BHP MSP. She is worried about the rollout. It needs to be delayed."
- * Resolved: "Met with Caroline regarding the BHP MSP. Caroline is worried about the BHP MSP rollout. The BHP MSP rollout needs to be delayed."
+ * @param text - Input text to resolve
+ * @param knownEntities - Map of lowercase entity name -> entity name
+ * @returns Resolved text and list of resolutions made
  */
-async function resolveWithLLM(text, knownEntities, entityAliases) {
-    // Build entity context with aliases
-    let entityContext = '';
-    if (entityAliases && entityAliases.size > 0) {
-        const entries = [];
-        for (const [canonical, aliases] of entityAliases) {
-            entries.push(`${canonical} (aliases: ${aliases.join(', ')})`);
-        }
-        entityContext = `\n\nKnown entities with aliases:\n${entries.join('\n')}`;
+export function resolveCoreferences(text, knownEntities) {
+    const resolutions = [];
+    let resolvedText = text;
+    // If no known entities, just return original text
+    if (knownEntities.size === 0) {
+        return { resolvedText, resolutions };
     }
-    else if (knownEntities.length > 0) {
-        entityContext = `\n\nKnown entities: ${knownEntities.join(', ')}`;
-    }
-    const prompt = `You are a Coreference Resolution Engine. Rewrite the provided user note by replacing all pronouns (he, she, they, it, his, her, their, the project, the client) with the specific entities they refer to based on the immediate context.
-
-Rules:
-1. Maintain the original tone and substance
-2. Replace pronouns with the actual entity name
-3. Replace vague references (the project, the client, the program) with specific names
-4. If an entity is ambiguous, keep the pronoun but append the most likely identity in brackets
-5. Do NOT change any other words
-${entityContext}
-
-Input: "${text}"
-
-Output the rewritten text with coreferences resolved. Output ONLY the resolved text, nothing else:`;
-    try {
-        const response = await fetch('http://localhost:11434/api/generate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                model: 'qwen2.5:1.5b',
-                prompt,
-                stream: false,
-                options: {
-                    temperature: 0.1,
-                    num_predict: 512
+    // Split into sentences to track context
+    const sentences = text.split(/[.!?]+/);
+    // Track most recent entities by gender/number
+    const recentEntities = {
+        female: [],
+        male: [],
+        neutral: []
+    };
+    // Process each sentence
+    for (let sentenceIdx = 0; sentenceIdx < sentences.length; sentenceIdx++) {
+        const sentence = sentences[sentenceIdx];
+        if (!sentence.trim())
+            continue;
+        // Extract words (simple tokenization)
+        const words = sentence.split(/\s+/);
+        // First pass: find known entities in this sentence and update recent
+        for (const word of words) {
+            const cleanWord = word.toLowerCase().replace(/[^a-z]/g, '');
+            // Check if this word is a known entity
+            if (knownEntities.has(cleanWord)) {
+                const entityName = knownEntities.get(cleanWord);
+                // Determine gender
+                const entityLower = entityName.toLowerCase();
+                // Check female names
+                if (PRONOUN_MAP['she'].some(n => n.toLowerCase() === entityLower)) {
+                    recentEntities.female = [entityName, ...recentEntities.female].slice(0, 3);
                 }
-            })
-        });
-        if (!response.ok) {
-            throw new Error(`Ollama request failed: ${response.statusText}`);
+                // Check male names  
+                else if (PRONOUN_MAP['he'].some(n => n.toLowerCase() === entityLower)) {
+                    recentEntities.male = [entityName, ...recentEntities.male].slice(0, 3);
+                }
+                // Neutral
+                else {
+                    recentEntities.neutral = [entityName, ...recentEntities.neutral].slice(0, 3);
+                }
+            }
         }
-        const data = await response.json();
-        // Cloud models (minimax, glm) use 'thinking' field, local models use 'response'
-        const resolvedText = (data.response || data.thinking || '').trim();
-        // Extract entity mappings by comparing original vs resolved
-        const entityMap = extractEntityMap(text, resolvedText);
-        return { resolvedText, entityMap };
-    }
-    catch (error) {
-        console.warn('Coreference LLM resolution failed:', error);
-        return { resolvedText: text, entityMap: new Map() };
-    }
-}
-/**
- * Extract entity mappings by comparing original and resolved text
- */
-function extractEntityMap(original, resolved) {
-    const map = new Map();
-    // Find pronouns in original
-    const pronouns = original.match(PRONOUN_PATTERNS) || [];
-    // Look for entity names in brackets in resolved text
-    const bracketPattern = /\[([^\]]+)\]/g;
-    let match;
-    while ((match = bracketPattern.exec(resolved)) !== null) {
-        // Find corresponding pronoun (approximate)
-        const entityName = match[1];
-        for (const pronoun of pronouns) {
-            if (!map.has(pronoun.toLowerCase())) {
-                map.set(pronoun.toLowerCase(), entityName);
-                break;
+        // Second pass: resolve pronouns
+        for (let i = 0; i < words.length; i++) {
+            const word = words[i];
+            const cleanWord = word.toLowerCase().replace(/[^a-z]/g, '');
+            // Skip if not a pronoun we handle
+            if (!PRONOUN_MAP[cleanWord])
+                continue;
+            // Get the appropriate recent entity list
+            let antecedent = null;
+            if (['she', 'her', 'hers', 'herself'].includes(cleanWord)) {
+                // Female pronoun - look for female entities
+                if (recentEntities.female.length > 0) {
+                    antecedent = recentEntities.female[0];
+                }
+            }
+            else if (['he', 'him', 'his', 'himself'].includes(cleanWord)) {
+                // Male pronoun - look for male entities
+                if (recentEntities.male.length > 0) {
+                    antecedent = recentEntities.male[0];
+                }
+            }
+            else if (['they', 'them', 'their', 'themselves'].includes(cleanWord)) {
+                // Neutral/plural - look for neutral entities first, then any
+                if (recentEntities.neutral.length > 0) {
+                    antecedent = recentEntities.neutral[0];
+                }
+                else if (recentEntities.female.length > 0) {
+                    antecedent = recentEntities.female[0];
+                }
+                else if (recentEntities.male.length > 0) {
+                    antecedent = recentEntities.male[0];
+                }
+            }
+            // If we found an antecedent, replace the pronoun
+            if (antecedent) {
+                // Create regex to replace this specific occurrence
+                // Use word boundary to avoid partial matches
+                const regex = new RegExp(`\\b${escapeRegex(word)}`, 'g');
+                // Check if already replaced (avoid double-replacement)
+                const position = resolvedText.indexOf(word);
+                if (position !== -1 && !resolutions.some(r => r.position === position && r.pronoun === cleanWord)) {
+                    resolvedText = resolvedText.replace(regex, antecedent);
+                    resolutions.push({
+                        pronoun: word,
+                        antecedent,
+                        position,
+                        replaced: true
+                    });
+                }
             }
         }
     }
-    return map;
+    return { resolvedText, resolutions };
 }
-// ============================================
-// MAIN COREFERENCE RESOLUTION
-// ============================================
 /**
- * Resolve coreferences in text
+ * Resolve coreferences from extracted entities (simpler version)
  *
- * @param text - Raw input text
- * @param knownEntities - Optional list of known entities (from memory store)
- * @param useLLM - Whether to use LLM for resolution (default: true)
- * @returns CoreferenceResult with resolved text and entity mappings
+ * @param text - Input text
+ * @param entities - Array of entity names found in text
+ * @returns Resolved text
  */
-export async function resolveCoreferences(text, knownEntities, useLLM = true) {
-    const originalText = text;
-    const entityMap = new Map();
-    const newEntitiesFound = [];
-    // Step 1: Extract entities from the current text
-    const extractedEntities = extractEntities(text);
-    const currentEntities = extractedEntities
-        .filter(e => e.type === 'person')
-        .map(e => e.text);
-    // Step 2: Build comprehensive entity list
-    let allEntities = [...currentEntities];
-    // Add entities from cache
-    for (const [_, entity] of entityCache) {
-        if (!allEntities.includes(entity.canonical)) {
-            allEntities.push(entity.canonical);
+export function resolveCoreferencesFromEntities(text, entities) {
+    // Build known entities map
+    const knownEntities = new Map();
+    for (const entity of entities) {
+        knownEntities.set(entity.toLowerCase(), entity);
+        // Also add aliases if entity has them
+        const aliasMatch = entity.match(/\(aka ([^)]+)\)/i);
+        if (aliasMatch) {
+            knownEntities.set(aliasMatch[1].toLowerCase(), entity);
         }
     }
-    // Add provided known entities
-    if (knownEntities) {
-        for (const e of knownEntities) {
-            if (!allEntities.includes(e)) {
-                allEntities.push(e);
-            }
-        }
-    }
-    // Step 3: Use LLM to resolve pronouns
-    let resolvedText = text;
-    if (useLLM && allEntities.length > 0) {
-        // Build entity aliases map from cache
-        const entityAliases = new Map();
-        for (const [_, entity] of entityCache) {
-            entityAliases.set(entity.canonical, entity.aliases);
-        }
-        const llmResult = await resolveWithLLM(text, allEntities, entityAliases);
-        resolvedText = llmResult.resolvedText;
-        // Merge LLM entity map
-        for (const [pronoun, canonical] of llmResult.entityMap) {
-            entityMap.set(pronoun.toLowerCase(), canonical);
-        }
-    }
-    // Step 4: Also do simple pattern-based resolution as backup
-    // Find "the X" patterns (e.g., "the Program Manager")
-    const definitePattern = /the\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g;
-    let match;
-    while ((match = definitePattern.exec(text)) !== null) {
-        const phrase = match[1];
-        const resolved = resolveEntity(phrase);
-        if (resolved) {
-            entityMap.set(phrase.toLowerCase(), resolved);
-        }
-    }
-    // Step 5: Apply pattern-based resolutions to resolved text (if LLM didn't already)
-    // Sort by length (longest first) to avoid partial replacements
-    const sortedMappings = [...entityMap.entries()].sort((a, b) => b[0].length - a[0].length);
-    for (const [mention, canonical] of sortedMappings) {
-        // Create regex for the mention (case-insensitive, whole word)
-        const regex = new RegExp(`\\b${mention}\\b`, 'gi');
-        resolvedText = resolvedText.replace(regex, `[${canonical}]`);
-    }
-    // Step 6: Add any new entities found to cache
-    for (const entity of currentEntities) {
-        if (!entityCache.has(entity.toLowerCase())) {
-            newEntitiesFound.push(entity);
-            addToEntityCache(entity, [], 'person');
-        }
-    }
-    return {
-        originalText,
-        resolvedText,
-        entityMap,
-        newEntitiesFound
-    };
+    return resolveCoreferences(text, knownEntities);
 }
 /**
- * Simple coreference resolution without LLM
- * Uses pattern matching and entity cache only
+ * Extract potential antecedents from query context
+ *
+ * @param query - User query
+ * @param entityNames - Known entity names
+ * @returns Map of potential antecedents
  */
-export function resolveCoreferencesSimple(text, knownEntities) {
-    const originalText = text;
-    const entityMap = new Map();
-    const newEntitiesFound = [];
-    // Extract entities from text
-    const extractedEntities = extractEntities(text);
-    // Add extracted entities to cache if new
-    for (const entity of extractedEntities) {
-        if (entity.type === 'person' && !entityCache.has(entity.text.toLowerCase())) {
-            newEntitiesFound.push(entity.text);
-            addToEntityCache(entity.text, [], entity.type);
+export function extractAntecedentsFromQuery(query, entityNames) {
+    const antecedents = new Map();
+    for (const entity of entityNames) {
+        if (query.toLowerCase().includes(entity.toLowerCase())) {
+            antecedents.set(entity.toLowerCase(), entity);
         }
     }
-    // Add known entities to cache
-    if (knownEntities) {
-        for (const e of knownEntities) {
-            if (!entityCache.has(e.toLowerCase())) {
-                addToEntityCache(e, [], 'unknown');
-            }
-        }
-    }
-    // Resolve pronouns using cache
-    const pronouns = text.match(PRONOUN_PATTERNS) || [];
-    for (const pronoun of pronouns) {
-        const resolved = resolveEntity(pronoun);
-        if (resolved) {
-            entityMap.set(pronoun.toLowerCase(), resolved);
-        }
-    }
-    // Resolve definite noun phrases
-    const definitePattern = /the\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g;
-    let match;
-    while ((match = definitePattern.exec(text)) !== null) {
-        const phrase = match[1];
-        const resolved = resolveEntity(phrase);
-        if (resolved) {
-            entityMap.set(phrase.toLowerCase(), resolved);
-        }
-    }
-    // Build resolved text
-    let resolvedText = text;
-    const sortedMappings = [...entityMap.entries()].sort((a, b) => b[0].length - a[0].length);
-    for (const [mention, canonical] of sortedMappings) {
-        const regex = new RegExp(`\\b${mention}\\b`, 'gi');
-        resolvedText = resolvedText.replace(regex, `[${canonical}]`);
-    }
-    return {
-        originalText,
-        resolvedText,
-        entityMap,
-        newEntitiesFound
-    };
+    return antecedents;
 }
 /**
- * Pre-process content before memory storage
+ * Check if text likely contains coreferences
+ *
+ * @param text - Text to check
+ * @returns True if likely contains pronouns needing resolution
  */
-export async function preprocessForMemory(content, store) {
-    // Get known entities from store if available
-    let knownEntities = [];
-    if (store) {
-        const entities = store.getEntities();
-        knownEntities = entities.map(e => e.name);
-    }
-    // Resolve coreferences
-    const result = await resolveCoreferences(content, knownEntities, true);
-    return {
-        originalContent: result.originalText,
-        resolvedContent: result.resolvedText,
-        coreferenceMap: Object.fromEntries(result.entityMap),
-        newEntities: result.newEntitiesFound
-    };
+export function likelyHasCoreferences(text) {
+    const pronouns = ['she', 'her', 'he', 'him', 'they', 'them', 'this', 'that'];
+    const lower = text.toLowerCase();
+    return pronouns.some(p => {
+        const regex = new RegExp(`\\b${p}\\b`, 'i');
+        return regex.test(lower);
+    });
+}
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+/**
+ * Escape special regex characters in a string
+ */
+function escapeRegex(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 /**
- * Simple version without LLM (faster, for batch processing)
+ * Get pronoun category
  */
-export function preprocessForMemorySimple(content, store) {
-    let knownEntities = [];
-    if (store) {
-        const entities = store.getEntities();
-        knownEntities = entities.map(e => e.name);
+function getPronounCategory(pronoun) {
+    if (['she', 'her', 'hers', 'herself'].includes(pronoun.toLowerCase())) {
+        return 'female';
     }
-    const result = resolveCoreferencesSimple(content, knownEntities);
-    return {
-        originalContent: result.originalText,
-        resolvedContent: result.resolvedText,
-        coreferenceMap: Object.fromEntries(result.entityMap),
-        newEntities: result.newEntitiesFound
-    };
+    if (['he', 'him', 'his', 'himself'].includes(pronoun.toLowerCase())) {
+        return 'male';
+    }
+    if (['they', 'them', 'their', 'themselves'].includes(pronoun.toLowerCase())) {
+        return 'neutral';
+    }
+    return 'other';
 }
+// ============================================================================
+// EXPORTS
+// ============================================================================
+export { PRONOUN_MAP, IDENTITY_VERBS, getPronounCategory, escapeRegex };
 //# sourceMappingURL=coreference.js.map

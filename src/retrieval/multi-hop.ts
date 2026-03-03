@@ -14,6 +14,7 @@ import type { Memory } from '../storage/index.js';
 import { EntityStore } from '../storage/entity-store.js';
 import { RelationshipStore } from '../storage/relationship-store.js';
 import { spreadActivation } from './spreading-activation.js';
+import { findPaths, Path } from './graph-traversal.js';
 import { extractTemporalMetadata } from '../extractors/temporal-metadata.js';
 
 // ============================================================================
@@ -50,6 +51,10 @@ export interface MultiHopResult {
   confidence: number;
   usedFallback: boolean;
   method: string;
+  /** Paths found between entities (for multi-hop queries) */
+  paths?: Path[];
+  /** Entity pairs that were queried for paths */
+  pathEntities?: string[];
 }
 
 export interface TemporalConstraint {
@@ -456,6 +461,56 @@ export async function multiHopRetrieval(
     { ...options, limit: limit * 2 } // Get more for graph expansion
   );
   
+  // Phase 1.5: BFS Path Finding for multi-hop queries
+  // If we have 2+ entities and stores available, find paths between them
+  let foundPaths: Path[] = [];
+  let pathEntities: string[] = [];
+  
+  if (entities.length >= 2 && options.entityStore && options.relationshipStore) {
+    try {
+      // Try to find paths between entity pairs
+      for (let i = 0; i < entities.length; i++) {
+        for (let j = i + 1; j < entities.length; j++) {
+          const sourceEntity = options.entityStore.findEntity(entities[i]);
+          const targetEntity = options.entityStore.findEntity(entities[j]);
+          
+          if (sourceEntity && targetEntity) {
+            const paths = findPaths(
+              sourceEntity.id,
+              targetEntity.id,
+              options.relationshipStore,
+              { maxHops: 3, maxPaths: 5 }
+            );
+            
+            if (paths.length > 0) {
+              foundPaths.push(...paths);
+              pathEntities.push(`${entities[i]} ↔ ${entities[j]}`);
+              
+              // Add memories from path entities to results
+              for (const path of paths) {
+                for (const segment of path.segments) {
+                  // Get memories for target entity in each segment
+                  const segMemories = getMemoriesByEntity(segment.target, 5);
+                  for (const mem of segMemories) {
+                    if (!entityMemories.find(m => m.id === mem.id)) {
+                      entityMemories.push(mem);
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      if (foundPaths.length > 0) {
+        console.log(`[MultiHop] Found ${foundPaths.length} paths between ${pathEntities.join(', ')}`);
+      }
+    } catch (error) {
+      console.error('[MultiHop] Path finding failed:', error);
+    }
+  }
+  
   // Phase 2: Graph expansion via spreading activation (if stores available)
   let expandedMemories = entityMemories;
   
@@ -498,7 +553,9 @@ export async function multiHopRetrieval(
       memories: finalMemories,
       confidence,
       usedFallback: false, // Set to true when IRCoT is implemented
-      method: 'entity-centric + spreading-activation (low confidence, IRCoT not implemented)'
+      method: 'entity-centric + spreading-activation (low confidence, IRCoT not implemented)',
+      paths: foundPaths.length > 0 ? foundPaths : undefined,
+      pathEntities: pathEntities.length > 0 ? pathEntities : undefined
     };
   }
   
@@ -508,7 +565,9 @@ export async function multiHopRetrieval(
     usedFallback: false,
     method: confidence >= 0.7 
       ? 'entity-centric + temporal + spreading-activation'
-      : 'entity-centric + temporal (no graph expansion)'
+      : 'entity-centric + temporal (no graph expansion)',
+    paths: foundPaths.length > 0 ? foundPaths : undefined,
+    pathEntities: pathEntities.length > 0 ? pathEntities : undefined
   };
 }
 

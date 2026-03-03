@@ -68,6 +68,8 @@ const RELATIONSHIP_PATTERNS: Record<RelationshipType, RegExp[]> = {
     /([A-Z][a-z]+)\s+(?:plans|planning|wants|wants to|going to)\s+([a-z]+(?:\s+[a-z]+)?)/gi,
     /([A-Z][a-z]+)'?\s*(?:plan|goal|aim)\s+(?:is|to)\s+([a-z]+)/gi,
   ],
+  // Co-occurrence relationships (entities mentioned together in same memory)
+  co_occurs_with: [],  // Populated dynamically during memory storage, not via pattern matching
 };
 
 export interface ExtractedRelationship {
