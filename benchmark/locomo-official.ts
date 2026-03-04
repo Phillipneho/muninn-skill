@@ -145,12 +145,12 @@ async function runBenchmark() {
       // Recall from memory
       const results = await store.recall(qa.question, { limit: 5 });
 
-      // Generate answer using LLM (qwen is fast locally)
+      // Generate answer using OpenAI
       let generatedAnswer: string;
       try {
         generatedAnswer = await generateAnswer(qa.question, results, {
-          maxTokens: 50,
-          model: 'qwen2.5:1.5b'
+          maxTokens: 100
+          // Uses default OpenAI model (gpt-4o-mini)
         });
       } catch (e) {
         // Fallback to raw retrieval if LLM fails

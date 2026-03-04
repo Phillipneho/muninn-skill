@@ -1,12 +1,12 @@
 /**
  * LLM Answer Generator for LOCOMO Benchmark
  *
- * Generates concise answers from retrieved memories using Ollama
+ * Generates concise answers from retrieved memories using OpenAI API
  * Optimized for speed with minimal context
  */
 import { Memory } from '../storage/index.js';
 /**
- * Generate concise answer from retrieved memories using LLM
+ * Generate concise answer from retrieved memories using OpenAI
  * Optimized for speed: uses minimal context and small response
  */
 export declare function generateAnswer(query: string, memories: Memory[], options?: {
@@ -14,7 +14,7 @@ export declare function generateAnswer(query: string, memories: Memory[], option
     model?: string;
 }): Promise<string>;
 /**
- * Check if generated answer matches expected answer using LLM
+ * Check if generated answer matches expected answer using OpenAI
  */
 export declare function checkAnswerWithLLM(generated: string, expected: string, question: string, options?: {
     model?: string;
