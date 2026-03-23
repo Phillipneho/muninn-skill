@@ -143,7 +143,13 @@ Output ← Hybrid Retrieval (BM25 + semantic + entity boost)
 
 ## Version History
 
-### 1.0.5 (2026-03-03)
+### v5.3 (Current)
+- Audit trail for memory operations
+- Lessons learned extraction
+- Cloud API support with BYOK
+- Unified local/cloud mode detection
+
+### v5.2
 - BFS path finding between entity pairs
 - Coreference resolution (pronoun → antecedent)
 - Path relevance ranking
@@ -156,5 +162,5 @@ AGPL-3.0
 ## Links
 
 - **Cloud Dashboard**: [muninn.au](https://muninn.au)
-- **GitHub (Skill)**: [github.com/Phillipneho/muninn-skill](https://github.com/Phillipneho/muninn-skill)
-- **GitHub (Cloud)**: [github.com/Phillipneho/muninn-cloud-v5.3](https://github.com/Phillipneho/muninn-cloud-v5.3)
+- **GitHub**: [github.com/Phillipneho/muninn](https://github.com/Phillipneho/muninn)
+- **Skill Package**: [github.com/Phillipneho/muninn-skill](https://github.com/Phillipneho/muninn-skill)
