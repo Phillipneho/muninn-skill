@@ -26,10 +26,10 @@ metadata:
 
 ## Two Modes
 
-| Mode | Storage | Cost | Setup |
-|------|---------|------|-------|
-| **Local** | SQLite + Ollama | Free | `clawhub install muninn-skill` |
-| **Cloud** | PostgreSQL + BYOK | $10/mo | Get API key at [muninn.au](https://muninn.au) |
+| Mode | Storage | Embeddings | Cost |
+|------|---------|------------|------|
+| **Local** | SQLite | Ollama (nomic-embed-text) | Free |
+| **Cloud** | PostgreSQL | Gemini / OpenAI (BYOK) | $10/mo |
 
 ### Local Mode (Free)
 
@@ -50,14 +50,34 @@ npm run mcp
 
 ### Cloud Mode (Paid)
 
-Hosted PostgreSQL with vector search. Use your own OpenAI/Anthropic API keys (BYOK).
+Hosted PostgreSQL with vector search. Use your own API keys (BYOK).
 
 ```bash
 # Get API key at https://muninn.au/dashboard
 export MUNINN_API_KEY=muninn_xxx
 
+# For Gemini embeddings (sleep cycle)
+export EMBEDDING_MODE=gemini
+export GEMINI_API_KEY=your-gemini-api-key
+
+# For OpenAI embeddings
+export EMBEDDING_MODE=openai
+export OPENAI_API_KEY=sk-proj-xxx
+
 # Cloud mode is automatic when API key is set
 # Falls back to local if not configured
+```
+
+### Gemini Embeddings (Recommended for Sleep Cycle)
+
+Best for sleep cycle consolidation — free tier includes 100 requests/day.
+
+```bash
+# Get free API key at https://aistudio.google.com/app/apikey
+export EMBEDDING_MODE=gemini
+export GEMINI_API_KEY=your-key
+
+# Uses text-embedding-004 model (768 dimensions)
 ```
 
 ## Features
@@ -126,12 +146,39 @@ Output ← Hybrid Retrieval (BM25 + semantic + entity boost)
 ### Local
 - **Storage**: SQLite with vector similarity
 - **Embeddings**: Ollama (`nomic-embed-text`)
+- **Compression**: TurboQuant (5x reduction, 94% similarity)
 - **Server**: MCP SDK
 
 ### Cloud
 - **Storage**: PostgreSQL + pgvector (Supabase)
 - **Embeddings**: BYOK (OpenAI/Anthropic) or our keys
+- **Compression**: TurboQuant (5x reduction, 94% similarity)
 - **Server**: MCP SDK + REST API
+
+### TurboQuant Compression
+
+Optional compression for 5x storage reduction:
+
+```bash
+# Install dependencies (local only)
+pip install torch scipy numpy
+
+# Start compression server
+cd ~/.openclaw/workspace/skills/muninn-skill/src/storage
+python3 turboquant-server.py &
+
+# Use in code
+import { compress, similarity } from './storage/turboquant-client.js';
+const compressed = await compress(embedding, 3);  // 3-bit, ~74% smaller
+const score = await similarity(query, compressed);
+```
+
+**Performance:**
+- Compression ratio: 3.9x (768-dim @ 3-bit)
+- Storage savings: 74%
+- Cosine similarity retention: 94%
+- First call latency: ~15s (PyTorch warmup)
+- Subsequent calls: ~50-100ms
 
 ## Pricing
 
@@ -148,6 +195,7 @@ Output ← Hybrid Retrieval (BM25 + semantic + entity boost)
 - Lessons learned extraction
 - Cloud API support with BYOK
 - Unified local/cloud mode detection
+- **TurboQuant compression** — 5x storage reduction, 94% similarity
 
 ### v5.2
 - BFS path finding between entity pairs
