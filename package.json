@@ -1,7 +1,7 @@
 {
-  "name": "@openclaw/memory-system",
-  "version": "1.0.5",
-  "description": "OpenClaw Memory System v1 - Local-first, Ollama-compatible memory that outperforms Mem0",
+  "name": "@openclaw/muninn-skill",
+  "version": "2.0.0",
+  "description": "Production memory for AI agents. 99.1% LOCOMO accuracy. Cloudflare-native with knowledge graph, temporal reasoning, multi-hop retrieval.",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

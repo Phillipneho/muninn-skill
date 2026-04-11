@@ -101,6 +101,9 @@ function expandQueryWithVariants(query: string): string[] {
   return [...new Set(expandedQueries)];
 }
 
+// Import audit types
+import type { StalenessInfo } from './audit.js';
+
 export interface Memory {
   id: string;
   type: MemoryType;
@@ -119,6 +122,12 @@ export interface Memory {
   created_at: string;
   updated_at: string;
   deleted_at?: string;
+  
+  // === Phase 1.4 Audit Extension Fields ===
+  valid_at?: string;              // When memory becomes valid (future content)
+  invalid_at?: string;            // When memory was superseded
+  last_confirmed_at?: string;     // Last verification timestamp
+  contradiction_flags?: string[]; // IDs of conflicting memories
 }
 
 export interface Procedure {
@@ -171,7 +180,7 @@ export interface VaultStats {
   procedures: number;
 }
 
-// Embedding function - supports Ollama (local), OpenAI, or zero-vector fallback (cloud)
+// Embedding function - supports Ollama (local), OpenAI, Gemini, or zero-vector fallback (cloud)
 export async function generateEmbedding(text: string): Promise<number[]> {
   const mode = process.env.EMBEDDING_MODE || 'ollama';
   
@@ -190,7 +199,36 @@ export async function generateEmbedding(text: string): Promise<number[]> {
     return embedding;
   }
   
-  // OpenAI embeddings (future)
+  // Gemini embeddings (Google Generative AI)
+  if (mode === 'gemini') {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error('GEMINI_API_KEY required for EMBEDDING_MODE=gemini');
+    }
+    
+    // Use Gemini's embedding model
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'models/gemini-embedding-001',
+        content: {
+          parts: [{ text }]
+        },
+        taskType: 'RETRIEVAL_DOCUMENT'
+      })
+    });
+    
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Gemini embedding failed (${response.status}): ${error}`);
+    }
+    
+    const data = await response.json() as { embedding: { values: number[] } };
+    return data.embedding.values;
+  }
+  
+  // OpenAI embeddings
   if (mode === 'openai') {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
